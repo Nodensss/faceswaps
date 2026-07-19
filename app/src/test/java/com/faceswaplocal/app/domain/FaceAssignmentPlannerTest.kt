@@ -14,14 +14,16 @@ class FaceAssignmentPlannerTest {
     )
 
     @Test
-    fun `defaults map every target to the first source`() {
+    fun `defaults map only the first target to the first source`() {
         val assignments = FaceAssignmentPlanner.defaults(
             sourceFaces = listOf(face("source-1"), face("source-2")),
             targetFaces = listOf(face("target-1"), face("target-2")),
         )
 
-        assertEquals(2, assignments.size)
-        assertTrue(assignments.all { it.sourceFaceId == FaceId("source-1") })
+        assertEquals(
+            listOf(SwapAssignment(FaceId("target-1"), FaceId("source-1"))),
+            assignments,
+        )
     }
 
     @Test
@@ -39,6 +41,28 @@ class FaceAssignmentPlannerTest {
 
         assertEquals(FaceId("source-1"), updated[0].sourceFaceId)
         assertEquals(FaceId("source-2"), updated[1].sourceFaceId)
+    }
+
+    @Test
+    fun `replaceSource adds an assignment for an unassigned target`() {
+        val assignments = FaceAssignmentPlanner.defaults(
+            sourceFaces = listOf(face("source-1")),
+            targetFaces = listOf(face("target-1"), face("target-2")),
+        )
+
+        val updated = FaceAssignmentPlanner.replaceSource(
+            assignments = assignments,
+            targetFaceId = FaceId("target-2"),
+            sourceFaceId = FaceId("source-2"),
+        )
+
+        assertEquals(
+            listOf(
+                SwapAssignment(FaceId("target-1"), FaceId("source-1")),
+                SwapAssignment(FaceId("target-2"), FaceId("source-2")),
+            ),
+            updated,
+        )
     }
 
     @Test

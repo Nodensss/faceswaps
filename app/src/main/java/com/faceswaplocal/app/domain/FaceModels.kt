@@ -54,23 +54,34 @@ object FaceAssignmentPlanner {
         targetFaces: List<DetectedFace>,
     ): List<SwapAssignment> {
         val firstSource = sourceFaces.firstOrNull() ?: return emptyList()
-        return targetFaces.map { target ->
+        val firstTarget = targetFaces.firstOrNull() ?: return emptyList()
+        return listOf(
             SwapAssignment(
-                targetFaceId = target.id,
+                targetFaceId = firstTarget.id,
                 sourceFaceId = firstSource.id,
-            )
-        }
+            ),
+        )
     }
 
     fun replaceSource(
         assignments: List<SwapAssignment>,
         targetFaceId: FaceId,
         sourceFaceId: FaceId,
-    ): List<SwapAssignment> = assignments.map { assignment ->
-        if (assignment.targetFaceId == targetFaceId) {
-            assignment.copy(sourceFaceId = sourceFaceId)
+    ): List<SwapAssignment> {
+        var replaced = false
+        val updated = assignments.map { assignment ->
+            if (assignment.targetFaceId == targetFaceId) {
+                replaced = true
+                assignment.copy(sourceFaceId = sourceFaceId)
+            } else {
+                assignment
+            }
+        }
+
+        return if (replaced) {
+            updated
         } else {
-            assignment
+            updated + SwapAssignment(targetFaceId, sourceFaceId)
         }
     }
 }
