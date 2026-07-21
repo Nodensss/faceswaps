@@ -42,6 +42,8 @@ android {
         compose = true
     }
 
+    sourceSets.getByName("androidTest").assets.srcDir("../docs/parity")
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -64,8 +66,12 @@ dependencies {
 
     implementation(libs.mlkit.face.detection)
     implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.onnxruntime.android)
 
     testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

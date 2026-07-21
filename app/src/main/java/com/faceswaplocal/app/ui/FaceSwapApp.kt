@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Paint
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -36,7 +37,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -55,6 +58,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.faceswaplocal.app.domain.DetectedFace
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.SwapAssignment
+import com.faceswaplocal.app.inference.ModelCatalog
+import com.faceswaplocal.app.inference.ModelDescriptor
+import com.faceswaplocal.app.inference.ModelId
+import com.faceswaplocal.app.inference.ModelStatus
+import com.faceswaplocal.app.inference.RawFaceSwapResult
+import com.faceswaplocal.app.inference.SwapperModel
 import kotlin.math.min
 
 @Composable
@@ -66,6 +75,14 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
     val targetPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         uri?.let(viewModel::selectTarget)
     }
+    var pendingModelId by remember { mutableStateOf<ModelId?>(null) }
+    val modelPicker = rememberLauncherForActivityResult(OpenDocument()) { uri ->
+        val modelId = pendingModelId
+        pendingModelId = null
+        if (uri != null && modelId != null) {
+            viewModel.importModel(modelId, uri)
+        }
+    }
 
     FaceSwapScreen(
         state = state,
@@ -75,8 +92,20 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         onPickTarget = {
             targetPicker.launch(PickVisualMediaRequest(PickVisualMedia.ImageOnly))
         },
+        onImportModel = { modelId ->
+            pendingModelId = modelId
+            modelPicker.launch(
+                arrayOf(
+                    "application/octet-stream",
+                    "application/onnx",
+                    "*/*",
+                ),
+            )
+        },
         onAnalyze = viewModel::analyze,
         onAssignSource = viewModel::assignSource,
+        onSelectSwapper = viewModel::selectSwapper,
+        onRunRawSwap = viewModel::runRawSwap,
         onDismissError = viewModel::dismissError,
     )
 }
@@ -87,8 +116,11 @@ private fun FaceSwapScreen(
     state: FaceSwapUiState,
     onPickSource: () -> Unit,
     onPickTarget: () -> Unit,
+    onImportModel: (ModelId) -> Unit,
     onAnalyze: () -> Unit,
     onAssignSource: (FaceId, FaceId) -> Unit,
+    onSelectSwapper: (SwapperModel) -> Unit,
+    onRunRawSwap: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     Scaffold(
@@ -116,6 +148,14 @@ private fun FaceSwapScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             PrivacyBanner()
+
+            ModelSetupCard(
+                statuses = state.modelStatuses,
+                message = state.modelMessage,
+                selectedSwapper = state.selectedSwapper,
+                onImportModel = onImportModel,
+                onSelectSwapper = onSelectSwapper,
+            )
 
             MediaPickerCard(
                 title = "1. Лица-источники",
@@ -168,6 +208,11 @@ private fun FaceSwapScreen(
                     assignments = state.assignments,
                     onAssignSource = onAssignSource,
                 )
+
+                RawSwapCard(
+                    state = state,
+                    onRunRawSwap = onRunRawSwap,
+                )
             }
 
             Spacer(Modifier.height(24.dp))
@@ -191,6 +236,136 @@ private fun PrivacyBanner() {
             )
         }
     }
+}
+
+@Composable
+private fun ModelSetupCard(
+    statuses: Map<ModelId, ModelStatus>,
+    message: String?,
+    selectedSwapper: SwapperModel,
+    onImportModel: (ModelId) -> Unit,
+    onSelectSwapper: (SwapperModel) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Локальные модели · этап B",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Веса не входят в APK и не отправляются в сеть. Выберите официальные ONNX-файлы: приложение скопирует их в приватное хранилище только после проверки полного SHA-256.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+
+            ModelCatalog.all.forEach { descriptor ->
+                ModelImportRow(
+                    descriptor = descriptor,
+                    status = statuses[descriptor.id] ?: ModelStatus.Missing,
+                    onImport = { onImportModel(descriptor.id) },
+                )
+            }
+
+            Text("Swapper для сырого кропа", fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = selectedSwapper == SwapperModel.HYPERSWAP_1A_256,
+                    onClick = { onSelectSwapper(SwapperModel.HYPERSWAP_1A_256) },
+                    label = { Text("HyperSwap 1a · 256") },
+                )
+                FilterChip(
+                    selected = selectedSwapper == SwapperModel.INSWAPPER_128_FP16,
+                    onClick = { onSelectSwapper(SwapperModel.INSWAPPER_128_FP16) },
+                    label = { Text("InSwapper fp16 · 128") },
+                )
+            }
+
+            message?.let {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Text(it, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelImportRow(
+    descriptor: ModelDescriptor,
+    status: ModelStatus,
+    onImport: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(modelDisplayName(descriptor.id), fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = "${descriptor.expectedSizeBytes / (1024 * 1024)} МиБ · ${descriptor.expectedSha256.take(12)}…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(
+                onClick = onImport,
+                enabled = status !is ModelStatus.Importing,
+            ) {
+                Text(if (status is ModelStatus.Ready) "Заменить" else "Импорт")
+            }
+        }
+        Text(
+            text = modelStatusText(status),
+            style = MaterialTheme.typography.bodySmall,
+            color = when (status) {
+                is ModelStatus.Ready -> MaterialTheme.colorScheme.primary
+                is ModelStatus.Invalid, is ModelStatus.Failed -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+private fun modelDisplayName(id: ModelId): String = when (id) {
+    ModelId.YOLOFACE_8N -> "YOLOFace 8n · 5 точек"
+    ModelId.ARCFACE_W600K_R50 -> "ArcFace w600k_r50 · embedding"
+    ModelId.HYPERSWAP_1A_256 -> "HyperSwap 1a · основной кандидат"
+    ModelId.INSWAPPER_128_FP16 -> "InSwapper 128 fp16 · активный fallback"
+}
+
+private fun modelStatusText(status: ModelStatus): String = when (status) {
+    ModelStatus.Missing -> "Не импортирована"
+    ModelStatus.PresentUnverified -> "Найдена приватная копия; ожидает проверки"
+    is ModelStatus.Importing -> {
+        val percent = if (status.expectedBytes > 0L) {
+            (status.bytesCopied * 100L / status.expectedBytes).coerceIn(0L, 100L)
+        } else {
+            0L
+        }
+        "Копирование и SHA-256: $percent%"
+    }
+
+    is ModelStatus.Ready -> "Готова · SHA-256 проверен (${status.verifiedSizeBytes} байт)"
+    is ModelStatus.Invalid -> when (status.details.reason) {
+        com.faceswaplocal.app.inference.ModelValidationFailure.SIZE_MISMATCH -> "Отклонена: неверный размер"
+        com.faceswaplocal.app.inference.ModelValidationFailure.CHECKSUM_MISMATCH -> "Отклонена: SHA-256 не совпадает"
+    }
+
+    is ModelStatus.Failed -> "Ошибка импорта: ${status.reason.name}"
 }
 
 @Composable
@@ -351,12 +526,120 @@ private fun AssignmentCard(
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Text(
-                    text = "Следующий этап проекта — подключение нейромодели и экспорт готового фото.",
+                    text = "Этап B использует независимый 5-точечный YOLOFace для нейромодельного выравнивания. Рамки ML Kit выше остаются только быстрым UI-превью.",
                     modifier = Modifier.padding(12.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun RawSwapCard(
+    state: FaceSwapUiState,
+    onRunRawSwap: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "4. Сырой neural swap",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Результат этапа B — отдельный квадратный кроп до inverse transform, маски и блендинга. В целевую фотографию он пока не вставляется.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+
+            Button(
+                onClick = onRunRawSwap,
+                enabled = state.canRunRawSwap,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    when (state.rawSwapPhase) {
+                        RawSwapPhase.RUNNING -> "Локальный inference выполняется…"
+                        RawSwapPhase.READY -> "Повторить сырой swap"
+                        else -> "Получить сырой кроп"
+                    },
+                )
+            }
+
+            if (!state.canRunRawSwap && state.rawSwapPhase != RawSwapPhase.RUNNING) {
+                Text(
+                    text = "Для запуска нужны выбранные фото, mapping и три проверенные модели: детектор, ArcFace и выбранный swapper.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (state.rawSwapPhase == RawSwapPhase.RUNNING) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
+                    Text("Проверяю SHA-256, выравниваю лица и запускаю ONNX Runtime вне Main thread.")
+                }
+            }
+
+            state.rawSwapError?.let { message ->
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text(message, modifier = Modifier.padding(12.dp))
+                }
+            }
+
+            state.rawSwapResult?.let { result ->
+                RawSwapResultView(result)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RawSwapResultView(result: RawFaceSwapResult) {
+    val image = remember(result.rawOutputBitmap) { result.rawOutputBitmap.asImageBitmap() }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color.Black,
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Image(
+                bitmap = image,
+                contentDescription = "Сырой квадратный кроп заменённого лица",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(300.dp),
+                contentScale = ContentScale.Fit,
+            )
+        }
+        Text(
+            text = when (result.swapper) {
+                SwapperModel.HYPERSWAP_1A_256 -> "HyperSwap 1a · 256×256"
+                SwapperModel.INSWAPPER_128_FP16 -> "InSwapper fp16 · 128×128"
+            },
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Backend: detector=${result.detectorBackend}, ArcFace=${result.recognizerBackend}, swapper=${result.swapperBackend}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = "Время: detector ${result.timings.detectorMs} мс · embedding ${result.timings.recognizerMs} мс · swapper ${result.timings.swapperMs} мс · всего ${result.timings.totalMs} мс",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

@@ -12,4 +12,5 @@ captures/
 *.keystore
 app/src/main/assets/models/*.onnx
 app/src/main/assets/models/*.tflite
+*.onnx
 
