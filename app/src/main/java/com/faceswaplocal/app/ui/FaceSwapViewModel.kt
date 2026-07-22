@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.faceswaplocal.app.data.BitmapLoader
 import com.faceswaplocal.app.data.MlKitLocalFaceDetector
@@ -89,7 +90,7 @@ data class FaceSwapUiState(
         }
 }
 
-class FaceSwapViewModel(application: Application) : AndroidViewModel(application) {
+class FaceSwapViewModel(application: Application, private val savedStateHandle: SavedStateHandle) : AndroidViewModel(application) {
     private val bitmapLoader = BitmapLoader(application.contentResolver)
     private val faceDetector = MlKitLocalFaceDetector()
     private val modelStore = ModelStore(application)
@@ -104,6 +105,12 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     val state: StateFlow<FaceSwapUiState> = mutableState.asStateFlow()
 
     init {
+        val restored = savedStateHandle.get<ArrayList<String>>(SAVED_ASSIGNMENTS).orEmpty()
+        if (restored.isNotEmpty()) {
+            mutableState.value = mutableState.value.copy(
+                errorMessage = "Выбранные назначения восстановлены, но изображения после смерти процесса нужно выбрать заново.",
+            )
+        }
         viewModelScope.launch {
             modelStore.statuses.collectLatest { statuses ->
                 mutableState.update { it.copy(modelStatuses = statuses) }
@@ -186,7 +193,8 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
                         targetBitmap = targetBitmap,
                         sourceFaces = sourceFaces,
                         targetFaces = targetFaces,
-                        assignments = FaceAssignmentPlanner.defaults(sourceFaces, targetFaces),
+                        assignments = restoreAssignments(sourceFaces, targetFaces)
+                            ?: FaceAssignmentPlanner.defaults(sourceFaces, targetFaces),
                         phase = AnalysisPhase.MAPPING,
                     )
                 }
@@ -298,14 +306,17 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             )
         }
         releasePhotoResultDeferred(previousResult)
+        persistAssignments()
     }
 
     fun setUnchanged(targetFaceId: FaceId) {
         mutableState.update { it.copy(assignments = it.assignments.filterNot { assignment -> assignment.targetFaceId == targetFaceId }) }
+        persistAssignments()
     }
 
     fun applySourceToAll(sourceFaceId: FaceId) {
         mutableState.update { it.copy(assignments = FaceAssignmentPlanner.applySourceToAll(it.targetFaces, sourceFaceId)) }
+        persistAssignments()
     }
 
     fun removeSource(sourceFaceId: FaceId) {
@@ -317,6 +328,7 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
                 assignments = FaceAssignmentPlanner.clearSource(state.assignments, sourceFaceId),
             )
         }
+        persistAssignments()
     }
 
     fun dismissError() {
@@ -348,6 +360,7 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             },
         )
         releasePhotoResultDeferred(current.photoSwapResult)
+        savedStateHandle.remove<ArrayList<String>>(SAVED_ASSIGNMENTS)
         releaseInputBitmapsAfter(
             job = runningPhotoSwap,
             source = current.sourceBitmap,
@@ -409,6 +422,26 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     private fun recycleBitmap(bitmap: Bitmap?) {
         if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
     }
+
+    private fun persistAssignments() {
+        savedStateHandle[SAVED_ASSIGNMENTS] = ArrayList(
+            mutableState.value.assignments.map { "${it.targetFaceId.value}|${it.sourceFaceId.value}" },
+        )
+    }
+
+    private fun restoreAssignments(sourceFaces: List<DetectedFace>, targetFaces: List<DetectedFace>): List<SwapAssignment>? {
+        val validSources = sourceFaces.mapTo(mutableSetOf()) { it.id.value }
+        val validTargets = targetFaces.mapTo(mutableSetOf()) { it.id.value }
+        val restored = savedStateHandle.get<ArrayList<String>>(SAVED_ASSIGNMENTS).orEmpty().mapNotNull { value ->
+            val parts = value.split('|', limit = 2)
+            if (parts.size == 2 && parts[0] in validTargets && parts[1] in validSources) {
+                SwapAssignment(FaceId(parts[0]), FaceId(parts[1]))
+            } else null
+        }
+        return restored.takeIf { it.isNotEmpty() }
+    }
+
+    private companion object { const val SAVED_ASSIGNMENTS = "stage_d_assignment_ids" }
 
     override fun onCleared() {
         analysisJob?.cancel()

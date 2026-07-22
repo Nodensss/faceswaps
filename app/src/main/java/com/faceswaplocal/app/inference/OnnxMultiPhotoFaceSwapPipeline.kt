@@ -28,6 +28,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
         val started = SystemClock.elapsedRealtime()
         val (resolvedTargets, _) = rawPipeline.detectFaces(target, backend)
         var accumulated: IntArray? = null
+        val sourceEmbeddings = mutableMapOf<FaceId, FloatArray>()
         var last: PhotoFaceSwapResult? = null
         for (targetFace in targetsInStableOrder) {
             coroutineContext.ensureActive()
@@ -41,11 +42,13 @@ class OnnxMultiPhotoFaceSwapPipeline(
                     targetFaceHint = targetFace.faceHint,
                     resolvedTargetFaces = resolvedTargets,
                     basePixels = accumulated,
+                    cachedSourceEmbedding = sourceEmbeddings[source.id],
                     backend = backend,
                 ),
             )
             last?.finalBitmap?.recycleSafely()
             last = next
+            sourceEmbeddings.putIfAbsent(source.id, next.sourceEmbedding)
             accumulated = IntArray(next.finalBitmap.width * next.finalBitmap.height).also {
                 next.finalBitmap.getPixels(it, 0, next.finalBitmap.width, 0, 0, next.finalBitmap.width, next.finalBitmap.height)
             }

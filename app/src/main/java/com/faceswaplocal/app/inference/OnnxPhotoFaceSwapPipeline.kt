@@ -16,6 +16,7 @@ data class PhotoFaceSwapRequest(
     val resolvedTargetFaces: List<DetectedFace5>? = null,
     /** Packed pixels of preceding compositing steps; geometry always uses [target]. */
     val basePixels: IntArray? = null,
+    val cachedSourceEmbedding: FloatArray? = null,
     val backend: RequestedInferenceBackend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
 )
 
@@ -41,6 +42,7 @@ data class PhotoFaceSwapResult(
     val recognizerBackend: InferenceBackend,
     val swapperBackend: InferenceBackend,
     val timings: PhotoFaceSwapTimings,
+    val sourceEmbedding: FloatArray,
 )
 
 /**
@@ -69,6 +71,7 @@ class OnnxPhotoFaceSwapPipeline(
                         sourceFaceHint = request.sourceFaceHint,
                         targetFaceHint = request.targetFaceHint,
                         resolvedTargetFaces = request.resolvedTargetFaces,
+                        cachedSourceEmbedding = request.cachedSourceEmbedding,
                     ),
                 )
                 try {
@@ -111,6 +114,7 @@ class OnnxPhotoFaceSwapPipeline(
                             compositingMs = compositingMs,
                             totalMs = elapsedRealtimeMs() - totalStarted,
                         ),
+                        sourceEmbedding = raw.sourceEmbedding,
                     )
                 } finally {
                     raw.recycleBitmaps()

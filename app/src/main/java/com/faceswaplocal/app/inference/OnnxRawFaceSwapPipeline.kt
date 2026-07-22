@@ -60,6 +60,7 @@ data class RawFaceSwapRequest(
     val targetFaceHint: FaceBox? = null,
     /** Target faces are resolved once from the untouched target image in Stage D. */
     val resolvedTargetFaces: List<DetectedFace5>? = null,
+    val cachedSourceEmbedding: FloatArray? = null,
 )
 
 data class RawFaceSwapTimings(
@@ -84,6 +85,7 @@ data class RawFaceSwapResult(
     val rawOutput: FloatArray,
     val rawMask: FloatArray?,
     val rawOutputBitmap: Bitmap,
+    val sourceEmbedding: FloatArray,
     val detectorBackend: InferenceBackend,
     val recognizerBackend: InferenceBackend,
     val swapperBackend: InferenceBackend,
@@ -153,11 +155,10 @@ class OnnxRawFaceSwapPipeline(
             var ownershipTransferred = false
             try {
                 val recognizerStarted = elapsedRealtimeMs()
-                val recognizerFile = modelStore.requireVerifiedModel(ModelId.ARCFACE_W600K_R50)
-                val (embedding, recognizerBackend) = runWithBackendFallback(
-                    modelFile = recognizerFile,
-                    requestedBackend = request.backend,
-                ) { session -> recognize(session, alignedSource) }
+                val (embedding, recognizerBackend) = request.cachedSourceEmbedding?.let { it to InferenceBackend.CPU } ?: run {
+                    val recognizerFile = modelStore.requireVerifiedModel(ModelId.ARCFACE_W600K_R50)
+                    runWithBackendFallback(recognizerFile, request.backend) { session -> recognize(session, alignedSource) }
+                }
                 val recognizerMs = elapsedRealtimeMs() - recognizerStarted
 
                 coroutineContext.ensureActive()
@@ -207,6 +208,7 @@ class OnnxRawFaceSwapPipeline(
                     rawOutput = swapperOutput.output,
                     rawMask = swapperOutput.mask,
                     rawOutputBitmap = rawBitmap,
+                    sourceEmbedding = embedding.copyOf(),
                     detectorBackend = detectorBackend,
                     recognizerBackend = recognizerBackend,
                     swapperBackend = swapperBackend,
