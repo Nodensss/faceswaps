@@ -84,5 +84,21 @@ object FaceAssignmentPlanner {
             updated + SwapAssignment(targetFaceId, sourceFaceId)
         }
     }
+
+    fun clearSource(assignments: List<SwapAssignment>, sourceFaceId: FaceId): List<SwapAssignment> =
+        assignments.filterNot { it.sourceFaceId == sourceFaceId }
+
+    fun applySourceToAll(
+        targetFaces: List<DetectedFace>,
+        sourceFaceId: FaceId,
+    ): List<SwapAssignment> = targetFaces.map { SwapAssignment(it.id, sourceFaceId) }
+
+    fun retainValidSources(
+        assignments: List<SwapAssignment>,
+        sourceFaces: List<DetectedFace>,
+    ): List<SwapAssignment> {
+        val ids = sourceFaces.mapTo(mutableSetOf()) { it.id }
+        return assignments.filter { it.sourceFaceId in ids }
+    }
 }
 

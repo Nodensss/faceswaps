@@ -20,6 +20,11 @@ import com.faceswaplocal.app.inference.ModelStatus
 import com.faceswaplocal.app.inference.ModelStore
 import com.faceswaplocal.app.inference.FaceBox
 import com.faceswaplocal.app.inference.OnnxPhotoFaceSwapPipeline
+import com.faceswaplocal.app.inference.OnnxRawFaceSwapPipeline
+import com.faceswaplocal.app.inference.OnnxMultiPhotoFaceSwapPipeline
+import com.faceswaplocal.app.inference.MultiPhotoAssignment
+import com.faceswaplocal.app.inference.MultiPhotoSource
+import com.faceswaplocal.app.inference.MultiPhotoTarget
 import com.faceswaplocal.app.inference.PhotoFaceSwapRequest
 import com.faceswaplocal.app.inference.PhotoFaceSwapResult
 import com.faceswaplocal.app.inference.RequestedInferenceBackend
@@ -50,11 +55,12 @@ enum class PhotoSwapPhase {
 }
 
 data class FaceSwapUiState(
-    val sourceUri: Uri? = null,
+    val sourceUris: List<Uri> = emptyList(),
     val targetUri: Uri? = null,
     val sourceBitmap: Bitmap? = null,
     val targetBitmap: Bitmap? = null,
     val sourceFaces: List<DetectedFace> = emptyList(),
+    val sourceBitmaps: Map<FaceId, Bitmap> = emptyMap(),
     val targetFaces: List<DetectedFace> = emptyList(),
     val assignments: List<SwapAssignment> = emptyList(),
     val phase: AnalysisPhase = AnalysisPhase.WAITING_FOR_MEDIA,
@@ -66,7 +72,7 @@ data class FaceSwapUiState(
     val photoSwapError: String? = null,
 ) {
     val canAnalyze: Boolean
-        get() = sourceUri != null && targetUri != null && phase != AnalysisPhase.ANALYZING
+        get() = sourceUris.isNotEmpty() && targetUri != null && phase != AnalysisPhase.ANALYZING
 
     val canRunPhotoSwap: Boolean
         get() {
@@ -77,11 +83,8 @@ data class FaceSwapUiState(
             )
             return phase == AnalysisPhase.MAPPING &&
                 photoSwapPhase != PhotoSwapPhase.RUNNING &&
-                sourceBitmap != null &&
                 targetBitmap != null &&
-                sourceFaces.size == 1 &&
-                targetFaces.size == 1 &&
-                assignments.size == 1 &&
+                assignments.isNotEmpty() &&
                 requiredModels.all { modelStatuses[it] is ModelStatus.Ready }
         }
 }
@@ -91,6 +94,8 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     private val faceDetector = MlKitLocalFaceDetector()
     private val modelStore = ModelStore(application)
     private val photoSwapPipeline = OnnxPhotoFaceSwapPipeline(modelStore)
+    private val rawPipeline = OnnxRawFaceSwapPipeline(modelStore)
+    private val multiPhotoSwapPipeline = OnnxMultiPhotoFaceSwapPipeline(rawPipeline, photoSwapPipeline)
     private val mutableState = MutableStateFlow(FaceSwapUiState())
     private val mainHandler = Handler(Looper.getMainLooper())
     private var analysisJob: Job? = null
@@ -110,21 +115,22 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun selectSource(uri: Uri) {
+    fun selectSources(uris: List<Uri>) {
         analysisJob?.cancel()
         val current = mutableState.value
-        resetSelections(sourceUri = uri, targetUri = current.targetUri)
+        resetSelections(sourceUris = uris.distinct().take(8), targetUri = current.targetUri)
     }
 
     fun selectTarget(uri: Uri) {
         analysisJob?.cancel()
         val current = mutableState.value
-        resetSelections(sourceUri = current.sourceUri, targetUri = uri)
+        resetSelections(sourceUris = current.sourceUris, targetUri = uri)
     }
 
     fun analyze() {
-        val sourceUri = mutableState.value.sourceUri ?: return
+        val sourceUris = mutableState.value.sourceUris
         val targetUri = mutableState.value.targetUri ?: return
+        if (sourceUris.isEmpty()) return
 
         analysisJob?.cancel()
         val runningPhotoSwap = photoSwapJob
@@ -156,9 +162,13 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             var decodedTarget: Bitmap? = null
             var stateOwnsDecodedBitmaps = false
             try {
-                val sourceBitmap = bitmapLoader.load(sourceUri).also { decodedSource = it }
                 val targetBitmap = bitmapLoader.load(targetUri).also { decodedTarget = it }
-                val sourceFaces = faceDetector.detect(sourceBitmap, idPrefix = "source")
+                val decodedSources = sourceUris.mapIndexed { index, uri ->
+                    val bitmap = bitmapLoader.load(uri)
+                    val faces = faceDetector.detect(bitmap, idPrefix = "source-$index")
+                    bitmap to faces
+                }
+                val sourceFaces = decodedSources.flatMap { it.second }
                 val targetFaces = faceDetector.detect(targetBitmap, idPrefix = "target")
 
                 require(sourceFaces.isNotEmpty()) {
@@ -171,7 +181,8 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
                 currentCoroutineContext().ensureActive()
                 mutableState.update {
                     it.copy(
-                        sourceBitmap = sourceBitmap,
+                        sourceBitmap = decodedSources.first().first,
+                        sourceBitmaps = decodedSources.flatMap { (bitmap, faces) -> faces.map { it.id to bitmap } }.toMap(),
                         targetBitmap = targetBitmap,
                         sourceFaces = sourceFaces,
                         targetFaces = targetFaces,
@@ -192,7 +203,8 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
                 }
             } finally {
                 if (!stateOwnsDecodedBitmaps) {
-                    releaseInputBitmaps(decodedSource, decodedTarget)
+                    decodedSource?.let { recycleBitmap(it) }
+                    releaseInputBitmaps(null, decodedTarget)
                 }
             }
         }
@@ -225,11 +237,11 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     fun runPhotoSwap() {
         val current = mutableState.value
         if (!current.canRunPhotoSwap) return
-        val source = current.sourceBitmap ?: return
         val target = current.targetBitmap ?: return
-        val assignment = current.assignments.singleOrNull() ?: return
-        val selectedSourceFace = current.sourceFaces.singleOrNull { it.id == assignment.sourceFaceId } ?: return
-        val selectedTargetFace = current.targetFaces.singleOrNull { it.id == assignment.targetFaceId } ?: return
+        val selectedAssignments = current.assignments
+        val sources = current.sourceFaces.mapNotNull { face ->
+            current.sourceBitmaps[face.id]?.let { bitmap -> MultiPhotoSource(face.id, bitmap, face.toPixelBox(bitmap)) }
+        }
 
         photoSwapJob?.cancel()
         photoSwapJob = viewModelScope.launch {
@@ -243,17 +255,13 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             }
             releasePhotoResultDeferred(previousResult)
             try {
-                val result = photoSwapPipeline.process(
-                    PhotoFaceSwapRequest(
-                        source = source,
-                        target = target,
-                        sourceFaceHint = selectedSourceFace.toPixelBox(source),
-                        targetFaceHint = selectedTargetFace.toPixelBox(target),
-                        // On known-unsafe x86/x86_64 ABIs this request is routed to CPU
-                        // before session creation; a catchable OrtException also retries CPU.
-                        backend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
-                    ),
-                )
+                val result = multiPhotoSwapPipeline.process(
+                    target = target,
+                    sources = sources,
+                    targetsInStableOrder = current.targetFaces.map { face -> MultiPhotoTarget(face.id, face.toPixelBox(target)) },
+                    assignments = selectedAssignments.map { MultiPhotoAssignment(it.targetFaceId, it.sourceFaceId) },
+                    backend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
+                ) ?: throw IllegalStateException("No target face is assigned")
                 mutableState.update {
                     it.copy(
                         photoSwapPhase = PhotoSwapPhase.READY,
@@ -292,10 +300,29 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
         releasePhotoResultDeferred(previousResult)
     }
 
+    fun setUnchanged(targetFaceId: FaceId) {
+        mutableState.update { it.copy(assignments = it.assignments.filterNot { assignment -> assignment.targetFaceId == targetFaceId }) }
+    }
+
+    fun applySourceToAll(sourceFaceId: FaceId) {
+        mutableState.update { it.copy(assignments = FaceAssignmentPlanner.applySourceToAll(it.targetFaces, sourceFaceId)) }
+    }
+
+    fun removeSource(sourceFaceId: FaceId) {
+        mutableState.update { state ->
+            val keptFaces = state.sourceFaces.filterNot { it.id == sourceFaceId }
+            state.copy(
+                sourceFaces = keptFaces,
+                sourceBitmaps = state.sourceBitmaps - sourceFaceId,
+                assignments = FaceAssignmentPlanner.clearSource(state.assignments, sourceFaceId),
+            )
+        }
+    }
+
     fun dismissError() {
         mutableState.update {
             it.copy(
-                phase = if (it.sourceUri != null && it.targetUri != null) {
+                    phase = if (it.sourceUris.isNotEmpty() && it.targetUri != null) {
                     AnalysisPhase.READY
                 } else {
                     AnalysisPhase.WAITING_FOR_MEDIA
@@ -305,16 +332,16 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun resetSelections(sourceUri: Uri?, targetUri: Uri?) {
+    private fun resetSelections(sourceUris: List<Uri>, targetUri: Uri?) {
         val runningPhotoSwap = photoSwapJob
         runningPhotoSwap?.cancel()
         val current = mutableState.value
         mutableState.value = FaceSwapUiState(
-            sourceUri = sourceUri,
+            sourceUris = sourceUris,
             targetUri = targetUri,
             modelStatuses = current.modelStatuses,
             modelMessage = current.modelMessage,
-            phase = if (sourceUri != null && targetUri != null) {
+            phase = if (sourceUris.isNotEmpty() && targetUri != null) {
                 AnalysisPhase.READY
             } else {
                 AnalysisPhase.WAITING_FOR_MEDIA
@@ -326,6 +353,7 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             source = current.sourceBitmap,
             target = current.targetBitmap,
         )
+        current.sourceBitmaps.values.distinct().filter { it !== current.sourceBitmap }.forEach(::recycleBitmap)
     }
 
     private fun Throwable.toUserMessage(): String = when (this) {
@@ -393,6 +421,7 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             source = current.sourceBitmap,
             target = current.targetBitmap,
         )
+        current.sourceBitmaps.values.distinct().filter { it !== current.sourceBitmap }.forEach(::recycleBitmap)
         faceDetector.close()
         super.onCleared()
     }

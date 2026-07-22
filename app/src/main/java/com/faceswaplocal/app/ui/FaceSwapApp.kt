@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
+import androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -26,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -68,8 +70,8 @@ import kotlin.math.min
 @Composable
 fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val sourcePicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
-        uri?.let(viewModel::selectSource)
+    val sourcePicker = rememberLauncherForActivityResult(PickMultipleVisualMedia(8)) { uris ->
+        if (uris.isNotEmpty()) viewModel.selectSources(uris)
     }
     val targetPicker = rememberLauncherForActivityResult(PickVisualMedia()) { uri ->
         uri?.let(viewModel::selectTarget)
@@ -103,6 +105,9 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         },
         onAnalyze = viewModel::analyze,
         onAssignSource = viewModel::assignSource,
+        onSetUnchanged = viewModel::setUnchanged,
+        onApplySourceToAll = viewModel::applySourceToAll,
+        onRemoveSource = viewModel::removeSource,
         onRunPhotoSwap = viewModel::runPhotoSwap,
         onDismissError = viewModel::dismissError,
     )
@@ -117,6 +122,9 @@ private fun FaceSwapScreen(
     onImportModel: (ModelId) -> Unit,
     onAnalyze: () -> Unit,
     onAssignSource: (FaceId, FaceId) -> Unit,
+    onSetUnchanged: (FaceId) -> Unit,
+    onApplySourceToAll: (FaceId) -> Unit,
+    onRemoveSource: (FaceId) -> Unit,
     onRunPhotoSwap: () -> Unit,
     onDismissError: () -> Unit,
 ) {
@@ -155,7 +163,7 @@ private fun FaceSwapScreen(
             MediaPickerCard(
                 title = "1. Лица-источники",
                 description = "Выберите фото с одним или несколькими лицами, которые будем переносить.",
-                isSelected = state.sourceUri != null,
+                isSelected = state.sourceUris.isNotEmpty(),
                 bitmap = state.sourceBitmap,
                 faces = state.sourceFaces,
                 onPick = onPickSource,
@@ -202,6 +210,9 @@ private fun FaceSwapScreen(
                     targetFaces = state.targetFaces,
                     assignments = state.assignments,
                     onAssignSource = onAssignSource,
+                    onSetUnchanged = onSetUnchanged,
+                    onApplySourceToAll = onApplySourceToAll,
+                    onRemoveSource = onRemoveSource,
                 )
 
                 PhotoSwapCard(
@@ -466,7 +477,11 @@ private fun AssignmentCard(
     targetFaces: List<DetectedFace>,
     assignments: List<SwapAssignment>,
     onAssignSource: (FaceId, FaceId) -> Unit,
+    onSetUnchanged: (FaceId) -> Unit,
+    onApplySourceToAll: (FaceId) -> Unit,
+    onRemoveSource: (FaceId) -> Unit,
 ) {
+    var confirmSource by remember { mutableStateOf<FaceId?>(null) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -499,7 +514,27 @@ private fun AssignmentCard(
                                 label = { Text("Источник ${sourceIndex + 1}") },
                             )
                         }
+                        FilterChip(
+                            selected = selectedSourceId == null,
+                            onClick = { onSetUnchanged(target.id) },
+                            label = { Text("Не менять") },
+                        )
                     }
+                }
+            }
+
+            if (sourceFaces.isNotEmpty()) {
+                Text("Применить источник ко всем", fontWeight = FontWeight.SemiBold)
+                Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    sourceFaces.forEachIndexed { index, source ->
+                        OutlinedButton(onClick = { confirmSource = source.id }) { Text("Источник ${index + 1}") }
+                    }
+                }
+            }
+            Text("Удалить источник до обработки", style = MaterialTheme.typography.labelMedium)
+            Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                sourceFaces.forEachIndexed { index, source ->
+                    OutlinedButton(onClick = { onRemoveSource(source.id) }) { Text("Удалить ${index + 1}") }
                 }
             }
 
@@ -514,6 +549,15 @@ private fun AssignmentCard(
                 )
             }
         }
+    }
+    confirmSource?.let { sourceId ->
+        AlertDialog(
+            onDismissRequest = { confirmSource = null },
+            title = { Text("Применить ко всем?") },
+            text = { Text("Выбранный источник заменит все целевые лица. Это действие можно изменить для каждого лица.") },
+            confirmButton = { Button(onClick = { onApplySourceToAll(sourceId); confirmSource = null }) { Text("Применить") } },
+            dismissButton = { OutlinedButton(onClick = { confirmSource = null }) { Text("Отмена") } },
+        )
     }
 }
 

@@ -266,6 +266,26 @@ class FaceCompositorTest {
     }
 
     @Test
+    fun `close face overlap composites second paste over accumulated first photo pixels`() {
+        // The target stands in for a close-people photo: two face ROIs overlap at x=3..4.
+        val originalPhoto = IntArray(8 * 6) { argb(255, 30, 40, 50) }
+        val neutralCrop = IntArray(4 * 4) { argb(255, 30, 40, 50) }
+        val first = FaceCompositor.composite(
+            originalPhoto, 8, 6, neutralCrop, IntArray(16) { argb(255, 210, 20, 20) }, 4, 4,
+            AffineMatrix(1.0, 0.0, 0.0, 0.0, 1.0, -1.0),
+        )
+        val second = FaceCompositor.composite(
+            first.pixels, 8, 6, neutralCrop, IntArray(16) { argb(255, 20, 210, 20) }, 4, 4,
+            AffineMatrix(1.0, 0.0, -1.0, 0.0, 1.0, -1.0),
+        )
+        // First-only interior remains; overlap uses the second face, proving no reset to original.
+        val firstOnly = second.pixels[index(1, 2, 8)]
+        val overlap = second.pixels[index(2, 2, 8)]
+        assertTrue(((firstOnly ushr 16) and 0xff) > ((firstOnly ushr 8) and 0xff))
+        assertTrue(((overlap ushr 8) and 0xff) > ((overlap ushr 16) and 0xff))
+    }
+
+    @Test
     fun `invalid inputs fail before compositing`() {
         assertThrows(IllegalArgumentException::class.java) {
             FaceCompositor.createBoxMask(0, 8)

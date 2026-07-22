@@ -74,5 +74,27 @@ class FaceAssignmentPlannerTest {
 
         assertTrue(assignments.isEmpty())
     }
+
+    @Test
+    fun `removing a source invalidates its dependent assignments`() {
+        val assignments = listOf(
+            SwapAssignment(FaceId("target-1"), FaceId("source-1")),
+            SwapAssignment(FaceId("target-2"), FaceId("source-2")),
+        )
+        assertEquals(
+            listOf(SwapAssignment(FaceId("target-2"), FaceId("source-2"))),
+            FaceAssignmentPlanner.clearSource(assignments, FaceId("source-1")),
+        )
+    }
+
+    @Test
+    fun `apply source to all assigns every target explicitly`() {
+        val result = FaceAssignmentPlanner.applySourceToAll(
+            listOf(face("target-1"), face("target-2"), face("target-3")),
+            FaceId("source-3"),
+        )
+        assertEquals(3, result.size)
+        assertTrue(result.all { it.sourceFaceId == FaceId("source-3") })
+    }
 }
 

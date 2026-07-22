@@ -58,6 +58,8 @@ data class RawFaceSwapRequest(
     val backend: RequestedInferenceBackend = RequestedInferenceBackend.CPU_ONLY,
     val sourceFaceHint: FaceBox? = null,
     val targetFaceHint: FaceBox? = null,
+    /** Target faces are resolved once from the untouched target image in Stage D. */
+    val resolvedTargetFaces: List<DetectedFace5>? = null,
 )
 
 data class RawFaceSwapTimings(
@@ -104,6 +106,14 @@ class OnnxRawFaceSwapPipeline(
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment(),
 ) {
+    suspend fun detectFaces(
+        bitmap: Bitmap,
+        backend: RequestedInferenceBackend,
+    ): Pair<List<DetectedFace5>, InferenceBackend> = withContext(workerDispatcher) {
+        val detectorFile = modelStore.requireVerifiedModel(ModelId.YOLOFACE_8N)
+        runWithBackendFallback(detectorFile, backend) { session -> detect(session, bitmap) }
+    }
+
     suspend fun process(request: RawFaceSwapRequest): RawFaceSwapResult =
         withContext(workerDispatcher) {
             val totalStarted = elapsedRealtimeMs()
@@ -117,7 +127,7 @@ class OnnxRawFaceSwapPipeline(
             ) { session ->
                 val sourceFaces = detect(session, request.source)
                 coroutineContext.ensureActive()
-                val targetFaces = detect(session, request.target)
+                val targetFaces = request.resolvedTargetFaces ?: detect(session, request.target)
                 sourceFaces to targetFaces
             }
             val sourceFace = selectDetectedFace(detectedPair.first, request.sourceFaceHint)

@@ -13,6 +13,9 @@ data class PhotoFaceSwapRequest(
     val target: Bitmap,
     val sourceFaceHint: FaceBox? = null,
     val targetFaceHint: FaceBox? = null,
+    val resolvedTargetFaces: List<DetectedFace5>? = null,
+    /** Packed pixels of preceding compositing steps; geometry always uses [target]. */
+    val basePixels: IntArray? = null,
     val backend: RequestedInferenceBackend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
 )
 
@@ -65,12 +68,13 @@ class OnnxPhotoFaceSwapPipeline(
                         backend = request.backend,
                         sourceFaceHint = request.sourceFaceHint,
                         targetFaceHint = request.targetFaceHint,
+                        resolvedTargetFaces = request.resolvedTargetFaces,
                     ),
                 )
                 try {
                     coroutineContext.ensureActive()
                     val compositingStarted = elapsedRealtimeMs()
-                    val targetPixels = request.target.readPixels()
+                    val targetPixels = request.basePixels ?: request.target.readPixels()
                     val targetCropPixels = raw.alignedTarget.readPixels()
                     val swappedCropPixels = raw.rawOutputBitmap.readPixels()
                     val composite = FaceCompositor.composite(
