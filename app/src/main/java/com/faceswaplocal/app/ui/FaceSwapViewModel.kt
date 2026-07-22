@@ -18,11 +18,11 @@ import com.faceswaplocal.app.inference.ModelId
 import com.faceswaplocal.app.inference.ModelImportResult
 import com.faceswaplocal.app.inference.ModelStatus
 import com.faceswaplocal.app.inference.ModelStore
-import com.faceswaplocal.app.inference.OnnxRawFaceSwapPipeline
-import com.faceswaplocal.app.inference.RawFaceSwapRequest
-import com.faceswaplocal.app.inference.RawFaceSwapResult
+import com.faceswaplocal.app.inference.FaceBox
+import com.faceswaplocal.app.inference.OnnxPhotoFaceSwapPipeline
+import com.faceswaplocal.app.inference.PhotoFaceSwapRequest
+import com.faceswaplocal.app.inference.PhotoFaceSwapResult
 import com.faceswaplocal.app.inference.RequestedInferenceBackend
-import com.faceswaplocal.app.inference.SwapperModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -42,7 +42,7 @@ enum class AnalysisPhase {
     ERROR,
 }
 
-enum class RawSwapPhase {
+enum class PhotoSwapPhase {
     IDLE,
     RUNNING,
     READY,
@@ -61,27 +61,27 @@ data class FaceSwapUiState(
     val errorMessage: String? = null,
     val modelStatuses: Map<ModelId, ModelStatus> = ModelCatalog.all.associate { it.id to ModelStatus.Missing },
     val modelMessage: String? = null,
-    // HyperSwap remains the primary candidate, but the verified InSwapper fallback is
-    // the Stage B default because it transfers source identity visibly on all parity pairs.
-    val selectedSwapper: SwapperModel = SwapperModel.INSWAPPER_128_FP16,
-    val rawSwapPhase: RawSwapPhase = RawSwapPhase.IDLE,
-    val rawSwapResult: RawFaceSwapResult? = null,
-    val rawSwapError: String? = null,
+    val photoSwapPhase: PhotoSwapPhase = PhotoSwapPhase.IDLE,
+    val photoSwapResult: PhotoFaceSwapResult? = null,
+    val photoSwapError: String? = null,
 ) {
     val canAnalyze: Boolean
         get() = sourceUri != null && targetUri != null && phase != AnalysisPhase.ANALYZING
 
-    val canRunRawSwap: Boolean
+    val canRunPhotoSwap: Boolean
         get() {
             val requiredModels = setOf(
                 ModelId.YOLOFACE_8N,
                 ModelId.ARCFACE_W600K_R50,
-                selectedSwapper.modelId,
+                ModelId.INSWAPPER_128_FP16,
             )
             return phase == AnalysisPhase.MAPPING &&
-                rawSwapPhase != RawSwapPhase.RUNNING &&
+                photoSwapPhase != PhotoSwapPhase.RUNNING &&
                 sourceBitmap != null &&
                 targetBitmap != null &&
+                sourceFaces.size == 1 &&
+                targetFaces.size == 1 &&
+                assignments.size == 1 &&
                 requiredModels.all { modelStatuses[it] is ModelStatus.Ready }
         }
 }
@@ -90,11 +90,11 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     private val bitmapLoader = BitmapLoader(application.contentResolver)
     private val faceDetector = MlKitLocalFaceDetector()
     private val modelStore = ModelStore(application)
-    private val rawSwapPipeline = OnnxRawFaceSwapPipeline(modelStore)
+    private val photoSwapPipeline = OnnxPhotoFaceSwapPipeline(modelStore)
     private val mutableState = MutableStateFlow(FaceSwapUiState())
     private val mainHandler = Handler(Looper.getMainLooper())
     private var analysisJob: Job? = null
-    private var rawSwapJob: Job? = null
+    private var photoSwapJob: Job? = null
 
     val state: StateFlow<FaceSwapUiState> = mutableState.asStateFlow()
 
@@ -127,8 +127,8 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
         val targetUri = mutableState.value.targetUri ?: return
 
         analysisJob?.cancel()
-        val runningRawSwap = rawSwapJob
-        runningRawSwap?.cancel()
+        val runningPhotoSwap = photoSwapJob
+        runningPhotoSwap?.cancel()
         val previousState = mutableState.value
         mutableState.update {
             it.copy(
@@ -139,14 +139,14 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
                 assignments = emptyList(),
                 phase = AnalysisPhase.ANALYZING,
                 errorMessage = null,
-                rawSwapPhase = RawSwapPhase.IDLE,
-                rawSwapResult = null,
-                rawSwapError = null,
+                photoSwapPhase = PhotoSwapPhase.IDLE,
+                photoSwapResult = null,
+                photoSwapError = null,
             )
         }
-        releaseRawResult(previousState.rawSwapResult)
+        releasePhotoResultDeferred(previousState.photoSwapResult)
         releaseInputBitmapsAfter(
-            job = runningRawSwap,
+            job = runningPhotoSwap,
             source = previousState.sourceBitmap,
             target = previousState.targetBitmap,
         )
@@ -222,55 +222,42 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun selectSwapper(swapper: SwapperModel) {
-        if (mutableState.value.selectedSwapper == swapper) return
-        rawSwapJob?.cancel()
-        releaseRawResult(mutableState.value.rawSwapResult)
-        mutableState.update {
-            it.copy(
-                selectedSwapper = swapper,
-                rawSwapPhase = RawSwapPhase.IDLE,
-                rawSwapResult = null,
-                rawSwapError = null,
-            )
-        }
-    }
-
-    fun runRawSwap() {
+    fun runPhotoSwap() {
         val current = mutableState.value
-        if (!current.canRunRawSwap) return
+        if (!current.canRunPhotoSwap) return
         val source = current.sourceBitmap ?: return
         val target = current.targetBitmap ?: return
-        val swapper = current.selectedSwapper
+        val assignment = current.assignments.singleOrNull() ?: return
+        val selectedSourceFace = current.sourceFaces.singleOrNull { it.id == assignment.sourceFaceId } ?: return
+        val selectedTargetFace = current.targetFaces.singleOrNull { it.id == assignment.targetFaceId } ?: return
 
-        rawSwapJob?.cancel()
-        rawSwapJob = viewModelScope.launch {
-            releaseRawResult(mutableState.value.rawSwapResult)
+        photoSwapJob?.cancel()
+        photoSwapJob = viewModelScope.launch {
+            val previousResult = mutableState.value.photoSwapResult
             mutableState.update {
                 it.copy(
-                    rawSwapPhase = RawSwapPhase.RUNNING,
-                    rawSwapResult = null,
-                    rawSwapError = null,
+                    photoSwapPhase = PhotoSwapPhase.RUNNING,
+                    photoSwapResult = null,
+                    photoSwapError = null,
                 )
             }
+            releasePhotoResultDeferred(previousResult)
             try {
-                val result = rawSwapPipeline.process(
-                    RawFaceSwapRequest(
+                val result = photoSwapPipeline.process(
+                    PhotoFaceSwapRequest(
                         source = source,
                         target = target,
-                        swapper = swapper,
-                        // CPU is the guaranteed Stage B path. ONNX Runtime 1.26.0
-                        // aborts natively (SIGABRT, outside Kotlin exception handling)
-                        // while creating an XNNPACK InSwapper session on API 35 x86_64.
-                        // XNNPACK remains available through RawFaceSwapRequest for an
-                        // explicit, reference-device-qualified caller.
-                        backend = RequestedInferenceBackend.CPU_ONLY,
+                        sourceFaceHint = selectedSourceFace.toPixelBox(source),
+                        targetFaceHint = selectedTargetFace.toPixelBox(target),
+                        // On known-unsafe x86/x86_64 ABIs this request is routed to CPU
+                        // before session creation; a catchable OrtException also retries CPU.
+                        backend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
                     ),
                 )
                 mutableState.update {
                     it.copy(
-                        rawSwapPhase = RawSwapPhase.READY,
-                        rawSwapResult = result,
+                        photoSwapPhase = PhotoSwapPhase.READY,
+                        photoSwapResult = result,
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -278,8 +265,8 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
             } catch (error: Throwable) {
                 mutableState.update {
                     it.copy(
-                        rawSwapPhase = RawSwapPhase.ERROR,
-                        rawSwapError = error.toUserMessage(),
+                        photoSwapPhase = PhotoSwapPhase.ERROR,
+                        photoSwapError = error.toUserMessage(),
                     )
                 }
             }
@@ -287,6 +274,9 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun assignSource(targetFaceId: FaceId, sourceFaceId: FaceId) {
+        val runningPhotoSwap = photoSwapJob
+        runningPhotoSwap?.cancel()
+        val previousResult = mutableState.value.photoSwapResult
         mutableState.update {
             it.copy(
                 assignments = FaceAssignmentPlanner.replaceSource(
@@ -294,8 +284,12 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
                     targetFaceId = targetFaceId,
                     sourceFaceId = sourceFaceId,
                 ),
+                photoSwapPhase = PhotoSwapPhase.IDLE,
+                photoSwapResult = null,
+                photoSwapError = null,
             )
         }
+        releasePhotoResultDeferred(previousResult)
     }
 
     fun dismissError() {
@@ -312,24 +306,23 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun resetSelections(sourceUri: Uri?, targetUri: Uri?) {
-        val runningRawSwap = rawSwapJob
-        runningRawSwap?.cancel()
+        val runningPhotoSwap = photoSwapJob
+        runningPhotoSwap?.cancel()
         val current = mutableState.value
         mutableState.value = FaceSwapUiState(
             sourceUri = sourceUri,
             targetUri = targetUri,
             modelStatuses = current.modelStatuses,
             modelMessage = current.modelMessage,
-            selectedSwapper = current.selectedSwapper,
             phase = if (sourceUri != null && targetUri != null) {
                 AnalysisPhase.READY
             } else {
                 AnalysisPhase.WAITING_FOR_MEDIA
             },
         )
-        releaseRawResult(current.rawSwapResult)
+        releasePhotoResultDeferred(current.photoSwapResult)
         releaseInputBitmapsAfter(
-            job = runningRawSwap,
+            job = runningPhotoSwap,
             source = current.sourceBitmap,
             target = current.targetBitmap,
         )
@@ -348,11 +341,20 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
         else -> "Локальный ONNX inference завершился ошибкой. Проверьте модели и повторите попытку."
     }
 
-    private fun releaseRawResult(result: RawFaceSwapResult?) {
+    private fun DetectedFace.toPixelBox(bitmap: Bitmap): FaceBox = FaceBox(
+        left = bounds.left * bitmap.width.toDouble(),
+        top = bounds.top * bitmap.height.toDouble(),
+        right = bounds.right * bitmap.width.toDouble(),
+        bottom = bounds.bottom * bitmap.height.toDouble(),
+    )
+
+    private fun releasePhotoResultDeferred(result: PhotoFaceSwapResult?) {
         result ?: return
-        recycleBitmap(result.alignedSource112)
-        recycleBitmap(result.alignedTarget)
-        recycleBitmap(result.rawOutputBitmap)
+        mainHandler.post { recycleBitmap(result.finalBitmap) }
+    }
+
+    private fun releasePhotoResultNow(result: PhotoFaceSwapResult?) {
+        recycleBitmap(result?.finalBitmap)
     }
 
     private fun releaseInputBitmapsAfter(job: Job?, source: Bitmap?, target: Bitmap?) {
@@ -382,12 +384,12 @@ class FaceSwapViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         analysisJob?.cancel()
-        val runningRawSwap = rawSwapJob
+        val runningPhotoSwap = photoSwapJob
         val current = mutableState.value
-        runningRawSwap?.cancel()
-        releaseRawResult(current.rawSwapResult)
+        runningPhotoSwap?.cancel()
+        releasePhotoResultNow(current.photoSwapResult)
         releaseInputBitmapsAfter(
-            job = runningRawSwap,
+            job = runningPhotoSwap,
             source = current.sourceBitmap,
             target = current.targetBitmap,
         )

@@ -16,8 +16,9 @@ data class FaceSwapRequest(
 )
 
 /**
- * Boundary for the licensed neural runtime that will be added in the next checkpoint.
- * Runtime-specific tensors and sessions must stay behind this interface.
+ * Domain boundary for the local neural runtime. The Stage C ONNX implementation lives
+ * under `inference`; runtime-specific tensors and sessions must stay behind that layer.
+ * The multi-assignment use case will bind this contract during Stage D.
  */
 interface FaceSwapEngine : Closeable {
     suspend fun swap(request: FaceSwapRequest): Bitmap

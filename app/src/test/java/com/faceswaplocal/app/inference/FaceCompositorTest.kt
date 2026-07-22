@@ -1,0 +1,316 @@
+package com.faceswaplocal.app.inference
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class FaceCompositorTest {
+    @Test
+    fun `box mask uses FaceFusion border blur and is symmetric`() {
+        val width = 16
+        val height = 12
+
+        val mask = FaceCompositor.createBoxMask(width, height)
+
+        assertEquals(width * height, mask.size)
+        assertEquals(0.045552f, mask[index(0, 0, width)], 1e-5f)
+        assertEquals(0.798430f, mask[index(1, 1, width)], 1e-5f)
+        assertEquals(1f, mask[index(8, 6, width)], 1e-5f)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val value = mask[index(x, y, width)]
+                assertTrue(value in 0f..1f)
+                assertEquals(value, mask[index(width - 1 - x, y, width)], 1e-6f)
+                assertEquals(value, mask[index(x, height - 1 - y, width)], 1e-6f)
+            }
+        }
+    }
+
+    @Test
+    fun `small box mask keeps a hard one-pixel border when blur amount is zero`() {
+        val mask = FaceCompositor.createBoxMask(width = 4, height = 4)
+
+        assertArrayEquals(
+            floatArrayOf(
+                0f, 0f, 0f, 0f,
+                0f, 1f, 1f, 0f,
+                0f, 1f, 1f, 0f,
+                0f, 0f, 0f, 0f,
+            ),
+            mask,
+            0f,
+        )
+    }
+
+    @Test
+    fun `color match applies bounded gain offset and sixty-five percent strength`() {
+        val swapped = intArrayOf(
+            argb(255, 20, 100, 200),
+            argb(255, 60, 140, 220),
+        )
+        val target = intArrayOf(
+            argb(255, 40, 80, 200),
+            argb(255, 80, 100, 240),
+        )
+
+        val result = FaceCompositor.matchCropColors(
+            targetCropPixels = target,
+            swappedCropPixels = swapped,
+            mask = floatArrayOf(1f, 1f),
+            width = 2,
+            height = 1,
+        )
+
+        assertEquals(1.0, result.adjustment.redGain, 1e-12)
+        assertEquals(0.85, result.adjustment.greenGain, 1e-12)
+        assertEquals(1.15, result.adjustment.blueGain, 1e-12)
+        assertEquals(20.0, result.adjustment.redOffset, 1e-12)
+        assertEquals(-12.0, result.adjustment.greenOffset, 1e-12)
+        assertEquals(-21.5, result.adjustment.blueOffset, 1e-12)
+        assertEquals(0.65, result.adjustment.strength, 0.0)
+        assertArrayEquals(
+            intArrayOf(
+                argb(255, 33, 82, 205),
+                argb(255, 73, 118, 227),
+            ),
+            result.pixels,
+        )
+    }
+
+    @Test
+    fun `color statistics ignore samples below threshold and weight accepted samples`() {
+        val first = FaceCompositor.matchCropColors(
+            targetCropPixels = intArrayOf(
+                argb(255, 20, 60, 100),
+                argb(255, 40, 80, 120),
+                argb(255, 0, 0, 0),
+            ),
+            swappedCropPixels = intArrayOf(
+                argb(255, 10, 30, 50),
+                argb(255, 30, 50, 70),
+                argb(255, 255, 255, 255),
+            ),
+            mask = floatArrayOf(1f, 0.5f, 0.49f),
+            width = 3,
+            height = 1,
+        )
+        val withoutIgnoredSample = FaceCompositor.matchCropColors(
+            targetCropPixels = intArrayOf(
+                argb(255, 20, 60, 100),
+                argb(255, 40, 80, 120),
+            ),
+            swappedCropPixels = intArrayOf(
+                argb(255, 10, 30, 50),
+                argb(255, 30, 50, 70),
+            ),
+            mask = floatArrayOf(1f, 0.5f),
+            width = 2,
+            height = 1,
+        )
+
+        assertEquals(withoutIgnoredSample.adjustment, first.adjustment)
+        assertEquals(1.0, first.adjustment.redGain, 1e-12)
+        assertEquals(10.0, first.adjustment.redOffset, 1e-12)
+    }
+
+    @Test
+    fun `color match retains alpha and handles zero source variance`() {
+        val result = FaceCompositor.matchCropColors(
+            targetCropPixels = intArrayOf(argb(255, 100, 110, 120)),
+            swappedCropPixels = intArrayOf(argb(73, 80, 90, 100)),
+            mask = floatArrayOf(1f),
+            width = 1,
+            height = 1,
+        )
+
+        assertEquals(1.0, result.adjustment.redGain, 0.0)
+        assertEquals(20.0, result.adjustment.redOffset, 0.0)
+        assertEquals(argb(73, 93, 103, 113), result.pixels.single())
+    }
+
+    @Test
+    fun `identity affine replaces only the unfeathered crop interior`() {
+        val width = 4
+        val target = IntArray(width * width) { index -> argb(41 + index, 7, 8, 9) }
+        val targetCrop = target.copyOf().also {
+            it[index(1, 1, width)] = argb(255, 10, 20, 30)
+            it[index(2, 1, width)] = argb(255, 20, 30, 40)
+            it[index(1, 2, width)] = argb(255, 30, 40, 50)
+            it[index(2, 2, width)] = argb(255, 40, 50, 60)
+        }
+        val swapped = targetCrop.copyOf().also {
+            it[index(1, 1, width)] = argb(255, 40, 50, 60)
+            it[index(2, 1, width)] = argb(255, 30, 40, 50)
+            it[index(1, 2, width)] = argb(255, 20, 30, 40)
+            it[index(2, 2, width)] = argb(255, 10, 20, 30)
+        }
+        val targetBefore = target.copyOf()
+        val targetCropBefore = targetCrop.copyOf()
+        val swappedBefore = swapped.copyOf()
+
+        val result = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = targetCrop,
+            swappedCropPixels = swapped,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+        )
+
+        assertEquals(CompositeRoi(0, 0, 4, 4), result.roi)
+        assertEquals(argb(46, 40, 50, 60), result.pixels[index(1, 1, width)])
+        assertEquals(argb(47, 30, 40, 50), result.pixels[index(2, 1, width)])
+        assertEquals(argb(50, 20, 30, 40), result.pixels[index(1, 2, width)])
+        assertEquals(argb(51, 10, 20, 30), result.pixels[index(2, 2, width)])
+        for (y in 0 until width) {
+            assertEquals(target[index(0, y, width)], result.pixels[index(0, y, width)])
+            assertEquals(target[index(3, y, width)], result.pixels[index(3, y, width)])
+        }
+        assertArrayEquals(targetBefore, target)
+        assertArrayEquals(targetCropBefore, targetCrop)
+        assertArrayEquals(swappedBefore, swapped)
+    }
+
+    @Test
+    fun `translated inverse affine limits changes and mask to its target ROI`() {
+        val targetWidth = 10
+        val targetHeight = 8
+        val cropWidth = 4
+        val cropHeight = 4
+        val target = IntArray(targetWidth * targetHeight) { argb(255, 4, 5, 6) }
+        val crop = intArrayOf(
+            argb(255, 1, 2, 3), argb(255, 2, 3, 4), argb(255, 3, 4, 5), argb(255, 4, 5, 6),
+            argb(255, 5, 6, 7), argb(255, 10, 20, 30), argb(255, 20, 30, 40), argb(255, 8, 9, 10),
+            argb(255, 9, 10, 11), argb(255, 30, 40, 50), argb(255, 40, 50, 60), argb(255, 12, 13, 14),
+            argb(255, 13, 14, 15), argb(255, 14, 15, 16), argb(255, 15, 16, 17), argb(255, 16, 17, 18),
+        )
+        val swapped = crop.copyOf().also {
+            it[index(1, 1, cropWidth)] = argb(255, 40, 50, 60)
+            it[index(2, 1, cropWidth)] = argb(255, 30, 40, 50)
+            it[index(1, 2, cropWidth)] = argb(255, 20, 30, 40)
+            it[index(2, 2, cropWidth)] = argb(255, 10, 20, 30)
+        }
+
+        val result = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = targetWidth,
+            targetHeight = targetHeight,
+            targetCropPixels = crop,
+            swappedCropPixels = swapped,
+            cropWidth = cropWidth,
+            cropHeight = cropHeight,
+            targetToCrop = AffineMatrix(1.0, 0.0, -3.0, 0.0, 1.0, -2.0),
+        )
+
+        assertEquals(CompositeRoi(3, 2, 7, 6), result.roi)
+        assertEquals(1f, result.warpedMask[index(4, 3, targetWidth)], 0f)
+        assertEquals(0f, result.warpedMask[index(3, 3, targetWidth)], 0f)
+        assertEquals(argb(255, 40, 50, 60), result.pixels[index(4, 3, targetWidth)])
+        for (y in 0 until targetHeight) {
+            for (x in 0 until targetWidth) {
+                if (x !in 3 until 7 || y !in 2 until 6) {
+                    assertEquals(target[index(x, y, targetWidth)], result.pixels[index(x, y, targetWidth)])
+                    assertEquals(0f, result.warpedMask[index(x, y, targetWidth)], 0f)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `fractional inverse sampling uses zero mask border edge-replicated crop and truncation`() {
+        val width = 16
+        val height = 12
+        val black = argb(255, 0, 0, 0)
+        val gray = argb(255, 100, 100, 100)
+        val result = FaceCompositor.composite(
+            targetPixels = IntArray(width * height) { black },
+            targetWidth = width,
+            targetHeight = height,
+            targetCropPixels = IntArray(width * height) { gray },
+            swappedCropPixels = IntArray(width * height) { gray },
+            cropWidth = width,
+            cropHeight = height,
+            targetToCrop = AffineMatrix(1.0, 0.0, -0.5, 0.0, 1.0, 0.0),
+        )
+
+        val alpha = result.warpedMask[index(0, 0, width)]
+        assertEquals(result.cropMask[index(0, 0, width)] * 0.5f, alpha, 1e-7f)
+        val expected = (100.0 * alpha).toInt()
+        assertEquals(argb(255, expected, expected, expected), result.pixels[index(0, 0, width)])
+        assertEquals(2, expected)
+    }
+
+    @Test
+    fun `crop fully outside target produces an unchanged image and zero warped mask`() {
+        val target = IntArray(36) { index -> argb(100 + index, index, index + 1, index + 2) }
+        val crop = IntArray(16) { index -> argb(255, index * 2, index * 3, index * 4) }
+
+        val result = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = 6,
+            targetHeight = 6,
+            targetCropPixels = crop,
+            swappedCropPixels = crop,
+            cropWidth = 4,
+            cropHeight = 4,
+            targetToCrop = AffineMatrix(1.0, 0.0, 100.0, 0.0, 1.0, 100.0),
+        )
+
+        assertEquals(CompositeRoi(0, 0, 0, 0), result.roi)
+        assertArrayEquals(target, result.pixels)
+        assertTrue(result.warpedMask.all { it == 0f })
+    }
+
+    @Test
+    fun `invalid inputs fail before compositing`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            FaceCompositor.createBoxMask(0, 8)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            FaceCompositor.matchCropColors(
+                targetCropPixels = intArrayOf(argb(255, 1, 2, 3)),
+                swappedCropPixels = intArrayOf(argb(255, 1, 2, 3)),
+                mask = floatArrayOf(0.49f),
+                width = 1,
+                height = 1,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            FaceCompositor.composite(
+                targetPixels = IntArray(3),
+                targetWidth = 2,
+                targetHeight = 2,
+                targetCropPixels = IntArray(16),
+                swappedCropPixels = IntArray(16),
+                cropWidth = 4,
+                cropHeight = 4,
+                targetToCrop = IDENTITY,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            FaceCompositor.composite(
+                targetPixels = IntArray(16),
+                targetWidth = 4,
+                targetHeight = 4,
+                targetCropPixels = IntArray(16),
+                swappedCropPixels = IntArray(16),
+                cropWidth = 4,
+                cropHeight = 4,
+                targetToCrop = AffineMatrix(1.0, 0.0, 0.0, 2.0, 0.0, 0.0),
+            )
+        }
+    }
+
+    private fun index(x: Int, y: Int, width: Int): Int = y * width + x
+
+    private fun argb(alpha: Int, red: Int, green: Int, blue: Int): Int =
+        (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+
+    private companion object {
+        val IDENTITY = AffineMatrix(1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+    }
+}

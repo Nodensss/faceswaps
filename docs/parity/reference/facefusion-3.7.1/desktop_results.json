@@ -15,7 +15,11 @@
       "face_swapper.prepare_crop_frame",
       "face_swapper.prepare_source_embedding",
       "face_swapper.balance_source_embedding",
-      "face_swapper.forward_swap_face"
+      "face_swapper.forward_swap_face",
+      "face_swapper.normalize_crop_frame",
+      "face_masker.create_box_mask",
+      "face_helper.paste_back",
+      "face_swapper.swap_face"
     ]
   },
   "models": {
@@ -187,12 +191,52 @@
         "sha256_f32le": "188a4e87d6c6d5b5dfe8c939f8ed98dc832d53df04ef2847327618329c2ea730",
         "visual_sha256": "e4a9525788d7bb1d190de8e27cc36a73d770ce37f7d6f3b2e4c99d23e2e168bf"
       },
+      "stage_c_final_output": {
+        "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+        "configuration": {
+          "face_swapper_model": "inswapper_128_fp16",
+          "face_swapper_pixel_boost": "128x128",
+          "face_swapper_weight": 0.5,
+          "face_mask_types": [
+            "box"
+          ],
+          "face_mask_blur": 0.3,
+          "face_mask_padding": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_matching": {
+            "enabled": false,
+            "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+          }
+        },
+        "file": "inswapper_final_box_03.png",
+        "shape": [
+          1254,
+          1254,
+          3
+        ],
+        "sha256": "eeada935b979fd02c34504a777681d618fd062ec3949117fa336c25d2b026afe",
+        "box_mask_file": "box_mask_03.png",
+        "box_mask_shape": [
+          128,
+          128
+        ],
+        "box_mask_minimum": 0.005324725992977619,
+        "box_mask_maximum": 1.0,
+        "box_mask_mean": 0.7395055294036865,
+        "box_mask_sha256": "3a3e90b0f32d9cd0037facbc5f47777738b5180866a024b9684a9f54c19d9532",
+        "elapsed_ms": 4780.07879992947
+      },
       "timings_ms": {
-        "source_detection": 458.5764000075869,
-        "target_detection": 296.8913000077009,
-        "recognizer": 468.0962000275031,
-        "swapper": 5937.274599971715,
-        "fallback_swapper": 8711.341799993534
+        "source_detection": 530.8548999018967,
+        "target_detection": 378.6979999858886,
+        "recognizer": 674.5952001074329,
+        "swapper": 3330.168699962087,
+        "fallback_swapper": 6741.601899964735,
+        "stage_c_swap_face": 4780.07879992947
       }
     },
     {
@@ -341,12 +385,52 @@
         "sha256_f32le": "ae82a71ed34ce16f8936b1b73e7fe308335a93d9c7c868f7c0e7f9f135444a99",
         "visual_sha256": "a2b35d9ef18709253f4825fdf9c70594ac8685f664bb041c281f463d660d187a"
       },
+      "stage_c_final_output": {
+        "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+        "configuration": {
+          "face_swapper_model": "inswapper_128_fp16",
+          "face_swapper_pixel_boost": "128x128",
+          "face_swapper_weight": 0.5,
+          "face_mask_types": [
+            "box"
+          ],
+          "face_mask_blur": 0.3,
+          "face_mask_padding": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_matching": {
+            "enabled": false,
+            "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+          }
+        },
+        "file": "inswapper_final_box_03.png",
+        "shape": [
+          1254,
+          1254,
+          3
+        ],
+        "sha256": "fee791db8735a4893f36d195e7f12bb7aa8371343d3c777b41bb73dba3272aac",
+        "box_mask_file": "box_mask_03.png",
+        "box_mask_shape": [
+          128,
+          128
+        ],
+        "box_mask_minimum": 0.005324725992977619,
+        "box_mask_maximum": 1.0,
+        "box_mask_mean": 0.7395055294036865,
+        "box_mask_sha256": "3a3e90b0f32d9cd0037facbc5f47777738b5180866a024b9684a9f54c19d9532",
+        "elapsed_ms": 5689.505799906328
+      },
       "timings_ms": {
-        "source_detection": 306.3191999681294,
-        "target_detection": 333.8153000222519,
-        "recognizer": 784.3115000287071,
-        "swapper": 2216.5116000105627,
-        "fallback_swapper": 8689.646000042558
+        "source_detection": 223.28599996399134,
+        "target_detection": 257.71909998729825,
+        "recognizer": 794.0702000632882,
+        "swapper": 3594.419199973345,
+        "fallback_swapper": 5489.401799975894,
+        "stage_c_swap_face": 5689.505799906328
       }
     },
     {
@@ -495,12 +579,52 @@
         "sha256_f32le": "9dbfc5aabf5d3cadf3216bae54607d7faadca17a807f30f744d62cecd8c91b31",
         "visual_sha256": "f607f04e4556f59569da9ef3ebc565dad8d7cae412a68884456e4bd5c88fffa1"
       },
+      "stage_c_final_output": {
+        "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+        "configuration": {
+          "face_swapper_model": "inswapper_128_fp16",
+          "face_swapper_pixel_boost": "128x128",
+          "face_swapper_weight": 0.5,
+          "face_mask_types": [
+            "box"
+          ],
+          "face_mask_blur": 0.3,
+          "face_mask_padding": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_matching": {
+            "enabled": false,
+            "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+          }
+        },
+        "file": "inswapper_final_box_03.png",
+        "shape": [
+          1254,
+          1254,
+          3
+        ],
+        "sha256": "e878e347e217180e8a9296fc73d5c95ec530fce3dff8f265a6128e917a6f6ec0",
+        "box_mask_file": "box_mask_03.png",
+        "box_mask_shape": [
+          128,
+          128
+        ],
+        "box_mask_minimum": 0.005324725992977619,
+        "box_mask_maximum": 1.0,
+        "box_mask_mean": 0.7395055294036865,
+        "box_mask_sha256": "3a3e90b0f32d9cd0037facbc5f47777738b5180866a024b9684a9f54c19d9532",
+        "elapsed_ms": 5645.14879998751
+      },
       "timings_ms": {
-        "source_detection": 377.86060001235455,
-        "target_detection": 497.4188000196591,
-        "recognizer": 820.5682000261731,
-        "swapper": 2170.692700019572,
-        "fallback_swapper": 7185.344899946358
+        "source_detection": 670.3976999269798,
+        "target_detection": 798.9024999551475,
+        "recognizer": 799.1340999724343,
+        "swapper": 1991.967000067234,
+        "fallback_swapper": 5380.088399979286,
+        "stage_c_swap_face": 5645.14879998751
       }
     }
   ]

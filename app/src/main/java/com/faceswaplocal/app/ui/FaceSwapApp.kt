@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -62,8 +62,7 @@ import com.faceswaplocal.app.inference.ModelCatalog
 import com.faceswaplocal.app.inference.ModelDescriptor
 import com.faceswaplocal.app.inference.ModelId
 import com.faceswaplocal.app.inference.ModelStatus
-import com.faceswaplocal.app.inference.RawFaceSwapResult
-import com.faceswaplocal.app.inference.SwapperModel
+import com.faceswaplocal.app.inference.PhotoFaceSwapResult
 import kotlin.math.min
 
 @Composable
@@ -104,8 +103,7 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         },
         onAnalyze = viewModel::analyze,
         onAssignSource = viewModel::assignSource,
-        onSelectSwapper = viewModel::selectSwapper,
-        onRunRawSwap = viewModel::runRawSwap,
+        onRunPhotoSwap = viewModel::runPhotoSwap,
         onDismissError = viewModel::dismissError,
     )
 }
@@ -119,8 +117,7 @@ private fun FaceSwapScreen(
     onImportModel: (ModelId) -> Unit,
     onAnalyze: () -> Unit,
     onAssignSource: (FaceId, FaceId) -> Unit,
-    onSelectSwapper: (SwapperModel) -> Unit,
-    onRunRawSwap: () -> Unit,
+    onRunPhotoSwap: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     Scaffold(
@@ -152,9 +149,7 @@ private fun FaceSwapScreen(
             ModelSetupCard(
                 statuses = state.modelStatuses,
                 message = state.modelMessage,
-                selectedSwapper = state.selectedSwapper,
                 onImportModel = onImportModel,
-                onSelectSwapper = onSelectSwapper,
             )
 
             MediaPickerCard(
@@ -209,9 +204,9 @@ private fun FaceSwapScreen(
                     onAssignSource = onAssignSource,
                 )
 
-                RawSwapCard(
+                PhotoSwapCard(
                     state = state,
-                    onRunRawSwap = onRunRawSwap,
+                    onRunPhotoSwap = onRunPhotoSwap,
                 )
             }
 
@@ -242,9 +237,7 @@ private fun PrivacyBanner() {
 private fun ModelSetupCard(
     statuses: Map<ModelId, ModelStatus>,
     message: String?,
-    selectedSwapper: SwapperModel,
     onImportModel: (ModelId) -> Unit,
-    onSelectSwapper: (SwapperModel) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -255,7 +248,7 @@ private fun ModelSetupCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "Локальные модели · этап B",
+                text = "Локальные модели · этап C",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
@@ -272,22 +265,11 @@ private fun ModelSetupCard(
                 )
             }
 
-            Text("Swapper для сырого кропа", fontWeight = FontWeight.SemiBold)
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilterChip(
-                    selected = selectedSwapper == SwapperModel.HYPERSWAP_1A_256,
-                    onClick = { onSelectSwapper(SwapperModel.HYPERSWAP_1A_256) },
-                    label = { Text("HyperSwap 1a · 256") },
-                )
-                FilterChip(
-                    selected = selectedSwapper == SwapperModel.INSWAPPER_128_FP16,
-                    onClick = { onSelectSwapper(SwapperModel.INSWAPPER_128_FP16) },
-                    label = { Text("InSwapper fp16 · 128") },
-                )
-            }
+            Text(
+                text = "Рабочий swapper этапа C: InSwapper fp16 · 128×128. HyperSwap не участвует в этом этапе.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             message?.let {
                 Surface(
@@ -526,7 +508,7 @@ private fun AssignmentCard(
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Text(
-                    text = "Этап B использует независимый 5-точечный YOLOFace для нейромодельного выравнивания. Рамки ML Kit выше остаются только быстрым UI-превью.",
+                    text = "Этап C связывает выбранную рамку с независимым 5-точечным YOLOFace. Рамки ML Kit остаются только быстрым UI-превью.",
                     modifier = Modifier.padding(12.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -536,9 +518,9 @@ private fun AssignmentCard(
 }
 
 @Composable
-private fun RawSwapCard(
+private fun PhotoSwapCard(
     state: FaceSwapUiState,
-    onRunRawSwap: () -> Unit,
+    onRunPhotoSwap: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -549,48 +531,48 @@ private fun RawSwapCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "4. Сырой neural swap",
+                text = "4. Заменить лицо",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "Результат этапа B — отдельный квадратный кроп до inverse transform, маски и блендинга. В целевую фотографию он пока не вставляется.",
+                text = "InSwapper создаёт новое лицо, после чего приложение выполняет inverse transform, цветосогласование, аффинную маску с растушёвкой и мягкий блендинг с целевой фотографией.",
                 style = MaterialTheme.typography.bodyMedium,
             )
 
             Button(
-                onClick = onRunRawSwap,
-                enabled = state.canRunRawSwap,
+                onClick = onRunPhotoSwap,
+                enabled = state.canRunPhotoSwap,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    when (state.rawSwapPhase) {
-                        RawSwapPhase.RUNNING -> "Локальный inference выполняется…"
-                        RawSwapPhase.READY -> "Повторить сырой swap"
-                        else -> "Получить сырой кроп"
+                    when (state.photoSwapPhase) {
+                        PhotoSwapPhase.RUNNING -> "Локальная замена выполняется…"
+                        PhotoSwapPhase.READY -> "Повторить замену лица"
+                        else -> "Заменить лицо на фото"
                     },
                 )
             }
 
-            if (!state.canRunRawSwap && state.rawSwapPhase != RawSwapPhase.RUNNING) {
+            if (!state.canRunPhotoSwap && state.photoSwapPhase != PhotoSwapPhase.RUNNING) {
                 Text(
-                    text = "Для запуска нужны выбранные фото, mapping и три проверенные модели: детектор, ArcFace и выбранный swapper.",
+                    text = "Этап C обрабатывает ровно одно лицо на каждом фото. Нужны назначение и проверенные YOLOFace, ArcFace и InSwapper fp16.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
-            if (state.rawSwapPhase == RawSwapPhase.RUNNING) {
+            if (state.photoSwapPhase == PhotoSwapPhase.RUNNING) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-                    Text("Проверяю SHA-256, выравниваю лица и запускаю ONNX Runtime вне Main thread.")
+                    Text("Проверяю SHA-256, запускаю CPU fallback и вставляю результат вне Main thread.")
                 }
             }
 
-            state.rawSwapError?.let { message ->
+            state.photoSwapError?.let { message ->
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -600,16 +582,16 @@ private fun RawSwapCard(
                 }
             }
 
-            state.rawSwapResult?.let { result ->
-                RawSwapResultView(result)
+            state.photoSwapResult?.let { result ->
+                PhotoSwapResultView(result)
             }
         }
     }
 }
 
 @Composable
-private fun RawSwapResultView(result: RawFaceSwapResult) {
-    val image = remember(result.rawOutputBitmap) { result.rawOutputBitmap.asImageBitmap() }
+private fun PhotoSwapResultView(result: PhotoFaceSwapResult) {
+    val image = remember(result.finalBitmap) { result.finalBitmap.asImageBitmap() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -618,26 +600,28 @@ private fun RawSwapResultView(result: RawFaceSwapResult) {
         ) {
             Image(
                 bitmap = image,
-                contentDescription = "Сырой квадратный кроп заменённого лица",
+                contentDescription = "Целевая фотография с заменённым лицом",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(300.dp),
+                    .height(420.dp),
                 contentScale = ContentScale.Fit,
             )
         }
         Text(
-            text = when (result.swapper) {
-                SwapperModel.HYPERSWAP_1A_256 -> "HyperSwap 1a · 256×256"
-                SwapperModel.INSWAPPER_128_FP16 -> "InSwapper fp16 · 128×128"
-            },
+            text = "InSwapper fp16 · итог ${result.finalBitmap.width}×${result.finalBitmap.height}",
             fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Результат находится только в памяти и ещё не сохранён. Экспорт будет добавлен на этапе E.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
             text = "Backend: detector=${result.detectorBackend}, ArcFace=${result.recognizerBackend}, swapper=${result.swapperBackend}",
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
-            text = "Время: detector ${result.timings.detectorMs} мс · embedding ${result.timings.recognizerMs} мс · swapper ${result.timings.swapperMs} мс · всего ${result.timings.totalMs} мс",
+            text = "Время: detector ${result.timings.detectorMs} мс · embedding ${result.timings.recognizerMs} мс · swapper ${result.timings.swapperMs} мс · blend ${result.timings.compositingMs} мс · всего ${result.timings.totalMs} мс",
             style = MaterialTheme.typography.bodySmall,
         )
     }

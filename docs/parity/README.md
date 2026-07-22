@@ -1,16 +1,17 @@
-# Parity-тест этапа B: FaceFusion 3.7.1 и Android
+# Parity-тест этапов B–C: FaceFusion 3.7.1 и Android
 
-Дата фиксации результатов: 2026-07-19.
+Дата фиксации результатов: этап B — 2026-07-19, этап C — 2026-07-21.
 
 ## Область проверки
 
-Этот набор проверяет два уровня из §11.4 `TECHNICAL_SPEC.md`:
+Этот набор проверяет три уровня из §11.4 `TECHNICAL_SPEC.md`:
 
 1. геометрию — пять ключевых точек, affine matrix и выровненные кропы;
 2. сырой выход swapper до mask compositing, inverse transform и blending.
+3. финальный кадр после inverse transform, box-mask, feathering и blending.
 
-Вставка кропа в исходную фотографию здесь намеренно отсутствует: она относится к
-этапу C. Все изображения набора синтетические, созданы специально для теста и не
+Артефакты уровней 1–2 относятся к этапу B, уровня 3 — к этапу C. Все изображения
+набора синтетические, созданы специально для теста и не
 изображают пользователя или иных реальных людей.
 
 ## Зафиксированный десктопный эталон
@@ -190,3 +191,60 @@ preview и никогда не передаёт свои точки в neural pi
 - `reference/facefusion-3.7.1/pair_*/*_f32le.bin` — эталонные float tensors;
 - `android/api35-x86_64/android_results.json` — Android metrics;
 - `android/api35-x86_64/*.png` — Android-визуализации сырого выхода.
+
+## Parity этапа C: финальный кадр
+
+Эталон создан тем же runner и окружением: FaceFusion 3.7.1, commit
+`3f81a8a78454089d720b8f318a12ae1702c4633b`, Python 3.12.10, ONNX Runtime 1.26.0,
+OpenCV 4.13.0, NumPy 2.2.1, `CPUExecutionProvider`. Production
+`face_swapper.swap_face` запущен с `inswapper_128_fp16`, pixel boost `128x128`,
+weight `0.5`, mask types `[box]`, blur `0.3`, padding `(0, 0, 0, 0)`.
+
+FaceFusion 3.7.1 в этом production-пути не выполняет отдельное color matching.
+Android намеренно добавляет требуемое FR-PHOTO-06 masked RGB mean/std color matching
+с strength `0.65`. Поэтому побитовое совпадение финального PNG не ожидается; это
+документированное функциональное отличие, а не ошибка alignment/swapper. Точные
+per-pair gain/offset записаны в Android `stage_c_results.json`.
+
+```powershell
+# Desktop reference; команда обновляет артефакты этапов B и C
+& 'C:\Users\ozr\AppData\Local\FaceSwapLocal\facefusion-3.7.1-venv\Scripts\python.exe' `
+  .\docs\parity\run_facefusion_reference.py `
+  --facefusion-root 'C:\Temp\facefusion-3.7.1' `
+  --model-dir 'C:\Users\ozr\AppData\Local\FaceSwapLocal\models' `
+  --input-root .\docs\parity\inputs `
+  --output-root .\docs\parity\reference\facefusion-3.7.1
+
+# Android API 35 / x86_64 / ONNX Runtime Android 1.26.0 / CPU
+.\gradlew.bat assembleDebug assembleDebugAndroidTest --console=plain
+adb install -r .\app\build\outputs\apk\debug\app-debug.apk
+adb install -r .\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
+adb shell am instrument -w -r `
+  -e class com.faceswaplocal.app.inference.FaceFusionFinalFrameParityInstrumentedTest `
+  com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Метрики рассчитаны по RGB-пикселям Android PNG и canonical FaceFusion PNG. `MAE`
+указан в уровнях `[0; 255]`; ROI — ограничивающий прямоугольник inverse paste-back.
+Во всех парах вне ROI изменено ровно 0 пикселей.
+
+| Пара | Full-frame global SSIM | Full-frame MAE/255 | Face ROI global SSIM | Face ROI MAE/255 | Изменено вне ROI |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `pair_01` | 0,999696 | 0,899689 | 0,999606 | 1,839452 | 0 |
+| `pair_02` | 0,998797 | 1,349565 | 0,997917 | 3,295332 | 0 |
+| `pair_03` | 0,997602 | 1,292755 | 0,997305 | 3,113785 | 0 |
+
+Минимальный full-frame SSIM — `0,997602`, минимальный face-ROI SSIM — `0,997305`;
+оба выше регрессионного порога `0,95`. Android и FaceFusion визуально совпадают.
+Абсолютное качество этапа C остаётся предфинальным: у `pair_02` видны переход у
+лба/волос и отличие лица от шеи, у `pair_03` — мягкие переходы у волос/бороды и
+различие освещения. Эти артефакты присутствуют и в эталоне. Двоение черт и смещение
+глаз/рта не обнаружены; во fixtures закрыт рот, поэтому зубы не проверены. Полный
+чек-лист находится в `STAGE_C_VISUAL_CHECKLIST.md`.
+
+Артефакты этапа C:
+
+- `reference/facefusion-3.7.1/stage_c_results.json` и `pair_*/inswapper_final_box_03.png`;
+- `reference/facefusion-3.7.1/pair_*/box_mask_03.png`;
+- `android/api35-x86_64/stage_c_results.json` и `pair_*_inswapper_final.png`;
+- `android/api35-x86_64/pair_*_box_mask_03.png`.

@@ -1,0 +1,104 @@
+[
+  {
+    "pair": "pair_01",
+    "reference": "FaceFusion 3.7.1 production swap_face, box blur 0.3",
+    "mobile_color_match": "masked RGB mean\/std, strength 0.65",
+    "full_frame_global_ssim": 0.9996957643601551,
+    "full_frame_mae_255": 0.8996892029503463,
+    "face_roi_global_ssim": 0.9996056089606697,
+    "face_roi_mae_255": 1.8394517261300336,
+    "outside_roi_changed_pixels": 0,
+    "inside_roi_changed_pixels": 746109,
+    "roi": {
+      "left": 187,
+      "top": 172,
+      "right": 1064,
+      "bottom": 1049
+    },
+    "color_adjustment": {
+      "red_gain": 1.0079134510139902,
+      "green_gain": 1.0071884034637926,
+      "blue_gain": 1.0277881083339244,
+      "red_offset": -2.8398003052747356,
+      "green_offset": -2.7204175650861657,
+      "blue_offset": -4.784973172849092,
+      "strength": 0.65
+    },
+    "detector_backend": "CPU",
+    "recognizer_backend": "CPU",
+    "swapper_backend": "CPU",
+    "detector_ms": 2918,
+    "recognizer_ms": 3969,
+    "swapper_ms": 38752,
+    "compositing_ms": 1907,
+    "total_ms": 47760
+  },
+  {
+    "pair": "pair_02",
+    "reference": "FaceFusion 3.7.1 production swap_face, box blur 0.3",
+    "mobile_color_match": "masked RGB mean\/std, strength 0.65",
+    "full_frame_global_ssim": 0.9987966971757696,
+    "full_frame_mae_255": 1.349565494617119,
+    "face_roi_global_ssim": 0.9979171416428434,
+    "face_roi_mae_255": 3.2953316169932165,
+    "outside_roi_changed_pixels": 0,
+    "inside_roi_changed_pixels": 524179,
+    "roi": {
+      "left": 333,
+      "top": 166,
+      "right": 1135,
+      "bottom": 969
+    },
+    "color_adjustment": {
+      "red_gain": 1.142879518326681,
+      "green_gain": 1.1424819460812505,
+      "blue_gain": 1.15,
+      "red_offset": -15.503594484748646,
+      "green_offset": -10.419055252790557,
+      "blue_offset": -6.52004842475057,
+      "strength": 0.65
+    },
+    "detector_backend": "CPU",
+    "recognizer_backend": "CPU",
+    "swapper_backend": "CPU",
+    "detector_ms": 2391,
+    "recognizer_ms": 6298,
+    "swapper_ms": 39847,
+    "compositing_ms": 942,
+    "total_ms": 49542
+  },
+  {
+    "pair": "pair_03",
+    "reference": "FaceFusion 3.7.1 production swap_face, box blur 0.3",
+    "mobile_color_match": "masked RGB mean\/std, strength 0.65",
+    "full_frame_global_ssim": 0.9976023843977663,
+    "full_frame_mae_255": 1.292755049869127,
+    "face_roi_global_ssim": 0.997304792792717,
+    "face_roi_mae_255": 3.113784800509754,
+    "outside_roi_changed_pixels": 0,
+    "inside_roi_changed_pixels": 477038,
+    "roi": {
+      "left": 277,
+      "top": 223,
+      "right": 1085,
+      "bottom": 1031
+    },
+    "color_adjustment": {
+      "red_gain": 1.0561967686672833,
+      "green_gain": 1.0252555689369431,
+      "blue_gain": 1.010538100034336,
+      "red_offset": -15.68711445997441,
+      "green_offset": -8.858572079989798,
+      "blue_offset": -4.828249398662749,
+      "strength": 0.65
+    },
+    "detector_backend": "CPU",
+    "recognizer_backend": "CPU",
+    "swapper_backend": "CPU",
+    "detector_ms": 2338,
+    "recognizer_ms": 4178,
+    "swapper_ms": 39493,
+    "compositing_ms": 923,
+    "total_ms": 46978
+  }
+]

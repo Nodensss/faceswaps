@@ -1,6 +1,6 @@
 # Benchmarks FaceSwapLocal
 
-Дата измерений этапа B: 2026-07-19.
+Дата измерений этапа B: 2026-07-19. Дата измерений этапа C: 2026-07-21.
 
 ## Статус reference device
 
@@ -179,3 +179,33 @@ Native abort завершает весь процесс и не может бы�
 5. Повторный цикл не менее пяти раз для проверки устойчивого роста heap.
 6. После этапа C — отдельные времена inverse transform и blending; после этапа E —
    restoration и полное время 12 MP сценария.
+
+## Контрольный сценарий этапа C
+
+Три синтетические пары 1254×1254 обработаны последовательно через InSwapper 128 fp16
+на CPU. Android total включает detector, recognizer, swapper, inverse transform,
+masked color matching и compositing. `Compositing` включает постобработку после
+swapper. AVD не является reference device, поэтому эти времена нельзя переносить на
+ARM-телефон.
+
+| Пара | Detector, ms | Recognizer, ms | Swapper, ms | Compositing, ms | Total, ms | Full SSIM | ROI SSIM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pair_01` | 2 918 | 3 969 | 38 752 | 1 907 | 47 760 | 0,999696 | 0,999606 |
+| `pair_02` | 2 391 | 6 298 | 39 847 | 942 | 49 542 | 0,998797 | 0,997917 |
+| `pair_03` | 2 338 | 4 178 | 39 493 | 923 | 46 978 | 0,997602 | 0,997305 |
+| **Медиана** | **2 391** | **4 178** | **39 493** | **942** | **47 760** | — | — |
+
+Desktop FaceFusion production `swap_face` CPU timing: `4 780,079`, `5 689,506` и
+`5 645,149` ms; медиана — `5 645,149` ms. Desktop и AVD timings не сравниваются как
+производительность: различаются архитектура, ORT build и окружающий pipeline.
+
+Ручной холодный UI-прогон `pair_01` в авиарежиме дал detector `16 406` ms, ArcFace
+`23 593` ms, swapper `211 152` ms, compositing `9 229` ms, total `262 232` ms.
+Все три backend в UI подтвердили `CPU_FALLBACK`. Скриншоты:
+`docs/reports/img/STAGE_C_FINAL_API35.png` и
+`docs/reports/img/STAGE_C_FINAL_DETAILS_API35.png`.
+
+Документированное отличие: canonical FaceFusion frame не содержит отдельного color
+matching, тогда как Android применяет masked RGB mean/std с strength `0.65` по
+FR-PHOTO-06. Измеренный эффект включён в SSIM/MAE; вне inverse paste ROI изменено
+0 пикселей во всех трёх парах.

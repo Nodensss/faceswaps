@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Generate Stage B geometry and raw swapper references with FaceFusion 3.7.1.
+"""Generate Stage B raw and Stage C final references with FaceFusion 3.7.1.
 
 The checked-out FaceFusion modules own detector preprocessing, recognition,
 alignment, embedding conversion and swapper forwarding. Their inference pools are
 instrumented with revision-pinned local ONNX Runtime sessions so no download is
-attempted and the raw tensor can be captured before masks or paste-back (Stage C).
+attempted. Stage C calls FaceFusion's production ``swap_face`` with its canonical
+box mask and paste-back path; no custom color-matching step is added.
 """
 
 from __future__ import annotations
@@ -41,6 +42,36 @@ MODEL_SPECS = {
         "c4eccca86ad177586c85c28bf1a64a9d9ed237e283a15818d831f7facfd3f420",
     ),
 }
+
+STAGE_C_CONFIG = {
+    "face_swapper_model": "inswapper_128_fp16",
+    "face_swapper_pixel_boost": "128x128",
+    "face_swapper_weight": 0.5,
+    "face_mask_types": ["box"],
+    "face_mask_blur": 0.3,
+    "face_mask_padding": [0, 0, 0, 0],
+    "color_matching": {
+        "enabled": False,
+        "description": (
+            "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not "
+            "apply a separate color-matching step in this path."
+        ),
+    },
+}
+
+INSTRUMENTED_FUNCTIONS = [
+    "face_detector.detect_with_yolo_face",
+    "face_recognizer.calculate_face_embedding",
+    "face_helper.warp_face_by_face_landmark_5",
+    "face_swapper.prepare_crop_frame",
+    "face_swapper.prepare_source_embedding",
+    "face_swapper.balance_source_embedding",
+    "face_swapper.forward_swap_face",
+    "face_swapper.normalize_crop_frame",
+    "face_masker.create_box_mask",
+    "face_helper.paste_back",
+    "face_swapper.swap_face",
+]
 
 
 def sha256(path: Path) -> str:
@@ -159,6 +190,7 @@ def run_pair(
     face_type,
     apply_nms,
     warp_face_by_face_landmark_5,
+    create_box_mask,
 ) -> dict[str, object]:
     source = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
     target = cv2.imread(str(target_path), cv2.IMREAD_COLOR)
@@ -264,6 +296,57 @@ def run_pair(
         render_inswapper_output(fallback_raw_output),
     )
 
+    state_manager.set_item("face_swapper_model", STAGE_C_CONFIG["face_swapper_model"])
+    state_manager.set_item(
+        "face_swapper_pixel_boost",
+        STAGE_C_CONFIG["face_swapper_pixel_boost"],
+    )
+    state_manager.set_item("face_swapper_weight", STAGE_C_CONFIG["face_swapper_weight"])
+    state_manager.set_item("face_mask_types", STAGE_C_CONFIG["face_mask_types"])
+    state_manager.set_item("face_mask_blur", STAGE_C_CONFIG["face_mask_blur"])
+    state_manager.set_item(
+        "face_mask_padding",
+        tuple(STAGE_C_CONFIG["face_mask_padding"]),
+    )
+
+    captured_box_mask: np.ndarray | None = None
+
+    def capture_box_mask(crop_vision_frame, face_mask_blur, face_mask_padding):
+        nonlocal captured_box_mask
+        mask = create_box_mask(
+            crop_vision_frame,
+            face_mask_blur,
+            face_mask_padding,
+        )
+        captured_box_mask = np.asarray(mask, dtype=np.float32).copy()
+        return mask
+
+    # swap_face imports create_box_mask into its module namespace. Wrap that alias
+    # only to retain the exact production mask emitted during this call.
+    face_swapper_module.create_box_mask = capture_box_mask
+    started = time.perf_counter()
+    try:
+        final_frame = face_swapper_module.swap_face(
+            source_face,
+            target_face,
+            source,
+            target,
+        )
+    finally:
+        stage_c_ms = (time.perf_counter() - started) * 1000.0
+        face_swapper_module.create_box_mask = create_box_mask
+
+    if captured_box_mask is None:
+        raise RuntimeError("FaceFusion swap_face did not create the requested box mask")
+
+    final_path = pair_dir / "inswapper_final_box_03.png"
+    mask_path = pair_dir / "box_mask_03.png"
+    if not cv2.imwrite(str(final_path), final_frame):
+        raise RuntimeError(f"Could not write Stage C final frame: {final_path}")
+    mask_u8 = np.rint(np.clip(captured_box_mask, 0.0, 1.0) * 255.0).astype(np.uint8)
+    if not cv2.imwrite(str(mask_path), mask_u8):
+        raise RuntimeError(f"Could not write Stage C box mask: {mask_path}")
+
     metadata = {
         "pair": pair_name,
         "source": {
@@ -308,12 +391,27 @@ def run_pair(
             "sha256_f32le": sha256(pair_dir / "inswapper_raw_output_f32le.bin"),
             "visual_sha256": sha256(pair_dir / "inswapper_raw_output.png"),
         },
+        "stage_c_final_output": {
+            "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+            "configuration": STAGE_C_CONFIG,
+            "file": final_path.name,
+            "shape": list(final_frame.shape),
+            "sha256": sha256(final_path),
+            "box_mask_file": mask_path.name,
+            "box_mask_shape": list(captured_box_mask.shape),
+            "box_mask_minimum": float(captured_box_mask.min()),
+            "box_mask_maximum": float(captured_box_mask.max()),
+            "box_mask_mean": float(captured_box_mask.mean()),
+            "box_mask_sha256": sha256(mask_path),
+            "elapsed_ms": stage_c_ms,
+        },
         "timings_ms": {
             "source_detection": source_detect_ms,
             "target_detection": target_detect_ms,
             "recognizer": recognizer_ms,
             "swapper": swapper_ms,
             "fallback_swapper": fallback_swapper_ms,
+            "stage_c_swap_face": stage_c_ms,
         },
     }
     save_json(pair_dir / "metadata.json", metadata)
@@ -335,6 +433,7 @@ def main() -> int:
     sys.path.insert(0, str(args.facefusion_root.resolve()))
     from facefusion import face_detector, face_recognizer, state_manager
     from facefusion.face_helper import apply_nms, warp_face_by_face_landmark_5
+    from facefusion.face_masker import create_box_mask
     from facefusion.processors.modules.face_swapper import core as face_swapper
     from facefusion.types import Face
 
@@ -393,6 +492,7 @@ def main() -> int:
                     Face,
                     apply_nms,
                     warp_face_by_face_landmark_5,
+                    create_box_mask,
                 )
             )
     finally:
@@ -408,15 +508,7 @@ def main() -> int:
             "opencv": cv2.__version__,
             "numpy": np.__version__,
             "provider": "CPUExecutionProvider",
-            "instrumented_functions": [
-                "face_detector.detect_with_yolo_face",
-                "face_recognizer.calculate_face_embedding",
-                "face_helper.warp_face_by_face_landmark_5",
-                "face_swapper.prepare_crop_frame",
-                "face_swapper.prepare_source_embedding",
-                "face_swapper.balance_source_embedding",
-                "face_swapper.forward_swap_face",
-            ],
+            "instrumented_functions": INSTRUMENTED_FUNCTIONS,
         },
         "models": {
             role: {"file": path.name, "sha256": sha256(path), "size": path.stat().st_size}
@@ -425,6 +517,21 @@ def main() -> int:
         "pairs": results,
     }
     save_json(args.output_root / "desktop_results.json", summary)
+    stage_c_summary = {
+        "reference": summary["reference"],
+        "models": summary["models"],
+        "configuration": STAGE_C_CONFIG,
+        "pairs": [
+            {
+                "pair": pair["pair"],
+                "source_sha256": pair["source"]["sha256"],
+                "target_sha256": pair["target"]["sha256"],
+                "final_output": pair["stage_c_final_output"],
+            }
+            for pair in results
+        ],
+    }
+    save_json(args.output_root / "stage_c_results.json", stage_c_summary)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
 

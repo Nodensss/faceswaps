@@ -1,0 +1,200 @@
+{
+  "reference": {
+    "project": "FaceFusion",
+    "version": "3.7.1",
+    "git_commit": "3f81a8a78454089d720b8f318a12ae1702c4633b",
+    "python": "3.12.10",
+    "onnxruntime": "1.26.0",
+    "opencv": "4.13.0",
+    "numpy": "2.2.1",
+    "provider": "CPUExecutionProvider",
+    "instrumented_functions": [
+      "face_detector.detect_with_yolo_face",
+      "face_recognizer.calculate_face_embedding",
+      "face_helper.warp_face_by_face_landmark_5",
+      "face_swapper.prepare_crop_frame",
+      "face_swapper.prepare_source_embedding",
+      "face_swapper.balance_source_embedding",
+      "face_swapper.forward_swap_face",
+      "face_swapper.normalize_crop_frame",
+      "face_masker.create_box_mask",
+      "face_helper.paste_back",
+      "face_swapper.swap_face"
+    ]
+  },
+  "models": {
+    "detector": {
+      "file": "yoloface_8n.onnx",
+      "sha256": "821cdbb1e65fbbabdde7dd0933f754797a343e56fd962729c61ffcefcd135929",
+      "size": 12659761
+    },
+    "recognizer": {
+      "file": "arcface_w600k_r50.onnx",
+      "sha256": "f1f79dc3b0b79a69f94799af1fffebff09fbd78fd96a275fd8f0cbbea23270d1",
+      "size": 174388474
+    },
+    "swapper": {
+      "file": "hyperswap_1a_256.onnx",
+      "sha256": "c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add",
+      "size": 402742682
+    },
+    "fallback_swapper": {
+      "file": "inswapper_128_fp16.onnx",
+      "sha256": "c4eccca86ad177586c85c28bf1a64a9d9ed237e283a15818d831f7facfd3f420",
+      "size": 277680829
+    }
+  },
+  "configuration": {
+    "face_swapper_model": "inswapper_128_fp16",
+    "face_swapper_pixel_boost": "128x128",
+    "face_swapper_weight": 0.5,
+    "face_mask_types": [
+      "box"
+    ],
+    "face_mask_blur": 0.3,
+    "face_mask_padding": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "color_matching": {
+      "enabled": false,
+      "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+    }
+  },
+  "pairs": [
+    {
+      "pair": "pair_01",
+      "source_sha256": "07d7dc1fdbfa61495342ba8e1b2178025c721561db9fd8e9dadaeb2b104ec3df",
+      "target_sha256": "1e06b3cac962b9cb0cf9e3ecec3e963e4eccf62e1bfe26f9c5fc1c5b27f23f1c",
+      "final_output": {
+        "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+        "configuration": {
+          "face_swapper_model": "inswapper_128_fp16",
+          "face_swapper_pixel_boost": "128x128",
+          "face_swapper_weight": 0.5,
+          "face_mask_types": [
+            "box"
+          ],
+          "face_mask_blur": 0.3,
+          "face_mask_padding": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_matching": {
+            "enabled": false,
+            "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+          }
+        },
+        "file": "inswapper_final_box_03.png",
+        "shape": [
+          1254,
+          1254,
+          3
+        ],
+        "sha256": "eeada935b979fd02c34504a777681d618fd062ec3949117fa336c25d2b026afe",
+        "box_mask_file": "box_mask_03.png",
+        "box_mask_shape": [
+          128,
+          128
+        ],
+        "box_mask_minimum": 0.005324725992977619,
+        "box_mask_maximum": 1.0,
+        "box_mask_mean": 0.7395055294036865,
+        "box_mask_sha256": "3a3e90b0f32d9cd0037facbc5f47777738b5180866a024b9684a9f54c19d9532",
+        "elapsed_ms": 4780.07879992947
+      }
+    },
+    {
+      "pair": "pair_02",
+      "source_sha256": "abe000ef539e541edd44fb83a94becc9fe5592b64c843a24b9fc96bcccb4faec",
+      "target_sha256": "48f7c31dbade973344831db6007016fc3934651d1d4914ee732a62d25c6d5ad1",
+      "final_output": {
+        "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+        "configuration": {
+          "face_swapper_model": "inswapper_128_fp16",
+          "face_swapper_pixel_boost": "128x128",
+          "face_swapper_weight": 0.5,
+          "face_mask_types": [
+            "box"
+          ],
+          "face_mask_blur": 0.3,
+          "face_mask_padding": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_matching": {
+            "enabled": false,
+            "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+          }
+        },
+        "file": "inswapper_final_box_03.png",
+        "shape": [
+          1254,
+          1254,
+          3
+        ],
+        "sha256": "fee791db8735a4893f36d195e7f12bb7aa8371343d3c777b41bb73dba3272aac",
+        "box_mask_file": "box_mask_03.png",
+        "box_mask_shape": [
+          128,
+          128
+        ],
+        "box_mask_minimum": 0.005324725992977619,
+        "box_mask_maximum": 1.0,
+        "box_mask_mean": 0.7395055294036865,
+        "box_mask_sha256": "3a3e90b0f32d9cd0037facbc5f47777738b5180866a024b9684a9f54c19d9532",
+        "elapsed_ms": 5689.505799906328
+      }
+    },
+    {
+      "pair": "pair_03",
+      "source_sha256": "b2dfe8f885b0dcc01b13a4a5838b2e3d3c34d03a22af6bb9ffe6b7958328860f",
+      "target_sha256": "4e29ad196ab9130356a5fe851bd479e15a8e145beb26dcd87a89305d13fab5c1",
+      "final_output": {
+        "pipeline": "FaceFusion 3.7.1 face_swapper.swap_face",
+        "configuration": {
+          "face_swapper_model": "inswapper_128_fp16",
+          "face_swapper_pixel_boost": "128x128",
+          "face_swapper_weight": 0.5,
+          "face_mask_types": [
+            "box"
+          ],
+          "face_mask_blur": 0.3,
+          "face_mask_padding": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_matching": {
+            "enabled": false,
+            "description": "Canonical FaceFusion 3.7.1 swap_face frame; FaceFusion does not apply a separate color-matching step in this path."
+          }
+        },
+        "file": "inswapper_final_box_03.png",
+        "shape": [
+          1254,
+          1254,
+          3
+        ],
+        "sha256": "e878e347e217180e8a9296fc73d5c95ec530fce3dff8f265a6128e917a6f6ec0",
+        "box_mask_file": "box_mask_03.png",
+        "box_mask_shape": [
+          128,
+          128
+        ],
+        "box_mask_minimum": 0.005324725992977619,
+        "box_mask_maximum": 1.0,
+        "box_mask_mean": 0.7395055294036865,
+        "box_mask_sha256": "3a3e90b0f32d9cd0037facbc5f47777738b5180866a024b9684a9f54c19d9532",
+        "elapsed_ms": 5645.14879998751
+      }
+    }
+  ]
+}

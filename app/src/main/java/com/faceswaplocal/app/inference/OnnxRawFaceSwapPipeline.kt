@@ -56,6 +56,8 @@ data class RawFaceSwapRequest(
     val target: Bitmap,
     val swapper: SwapperModel = SwapperModel.HYPERSWAP_1A_256,
     val backend: RequestedInferenceBackend = RequestedInferenceBackend.CPU_ONLY,
+    val sourceFaceHint: FaceBox? = null,
+    val targetFaceHint: FaceBox? = null,
 )
 
 data class RawFaceSwapTimings(
@@ -118,9 +120,9 @@ class OnnxRawFaceSwapPipeline(
                 val targetFaces = detect(session, request.target)
                 sourceFaces to targetFaces
             }
-            val sourceFace = detectedPair.first.firstOrNull()
+            val sourceFace = selectDetectedFace(detectedPair.first, request.sourceFaceHint)
                 ?: throw NoNeuralFaceFoundException("source")
-            val targetFace = detectedPair.second.firstOrNull()
+            val targetFace = selectDetectedFace(detectedPair.second, request.targetFaceHint)
                 ?: throw NoNeuralFaceFoundException("target")
             val detectorMs = elapsedRealtimeMs() - detectorStarted
 
@@ -343,21 +345,11 @@ class OnnxRawFaceSwapPipeline(
     ): List<DetectedFace5> {
         val kept = ArrayList<DetectedFace5>()
         candidates.sortedByDescending(DetectedFace5::score).forEach { candidate ->
-            if (kept.none { intersectionOverUnion(candidate.box, it.box) > threshold }) {
+            if (kept.none { faceBoxIntersectionOverUnion(candidate.box, it.box) > threshold }) {
                 kept += candidate
             }
         }
         return kept
-    }
-
-    private fun intersectionOverUnion(first: FaceBox, second: FaceBox): Double {
-        val intersectionWidth = max(0.0, min(first.right, second.right) - max(first.left, second.left))
-        val intersectionHeight = max(0.0, min(first.bottom, second.bottom) - max(first.top, second.top))
-        val intersection = intersectionWidth * intersectionHeight
-        val firstArea = max(0.0, first.right - first.left) * max(0.0, first.bottom - first.top)
-        val secondArea = max(0.0, second.right - second.left) * max(0.0, second.bottom - second.top)
-        val union = firstArea + secondArea - intersection
-        return if (union > 0.0) intersection / union else 0.0
     }
 
     private fun convertInSwapperEmbedding(
@@ -517,6 +509,34 @@ class OnnxRawFaceSwapPipeline(
  */
 internal fun mayAttemptXnnpack(supportedAbis: Array<String>): Boolean =
     supportedAbis.none { abi -> abi.startsWith("x86", ignoreCase = true) }
+
+/**
+ * Resolves the neural detector result that corresponds to the face selected in the UI.
+ * Without a hint, Stage B keeps its highest-confidence behaviour. With a hint, confidence
+ * ordering must not override the user's assignment: the overlapping box with the greatest
+ * IoU wins, and a non-overlapping result is rejected instead of silently swapping a stranger.
+ */
+internal fun selectDetectedFace(
+    candidates: List<DetectedFace5>,
+    hint: FaceBox?,
+): DetectedFace5? {
+    if (hint == null) return candidates.firstOrNull()
+    return candidates
+        .map { candidate -> candidate to faceBoxIntersectionOverUnion(candidate.box, hint) }
+        .filter { (_, overlap) -> overlap > 0.0 }
+        .maxByOrNull { (_, overlap) -> overlap }
+        ?.first
+}
+
+internal fun faceBoxIntersectionOverUnion(first: FaceBox, second: FaceBox): Double {
+    val intersectionWidth = max(0.0, min(first.right, second.right) - max(first.left, second.left))
+    val intersectionHeight = max(0.0, min(first.bottom, second.bottom) - max(first.top, second.top))
+    val intersection = intersectionWidth * intersectionHeight
+    val firstArea = max(0.0, first.right - first.left) * max(0.0, first.bottom - first.top)
+    val secondArea = max(0.0, second.right - second.left) * max(0.0, second.bottom - second.top)
+    val union = firstArea + secondArea - intersection
+    return if (union > 0.0) intersection / union else 0.0
+}
 
 /** Pixel transforms kept independent from Canvas/GPU to make parity deterministic. */
 private object BitmapSampling {
