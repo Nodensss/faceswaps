@@ -105,6 +105,11 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
 
     val state: StateFlow<FaceSwapUiState> = mutableState.asStateFlow()
 
+    internal fun injectUiStateForTest(testState: FaceSwapUiState) {
+        mutableState.value = testState
+        persistAssignments()
+    }
+
     init {
         val restored = savedStateHandle.get<ArrayList<String>>(SAVED_ASSIGNMENTS).orEmpty()
         if (restored.isNotEmpty()) {

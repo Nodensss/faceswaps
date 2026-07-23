@@ -44,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -115,7 +116,7 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun FaceSwapScreen(
+internal fun FaceSwapScreen(
     state: FaceSwapUiState,
     onPickSource: () -> Unit,
     onPickTarget: () -> Unit,
@@ -147,6 +148,7 @@ private fun FaceSwapScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .testTag("main-scroll")
                 .padding(scaffoldPadding)
                 .padding(horizontal = 16.dp, vertical = 12.dp)
                 .verticalScroll(rememberScrollState()),
@@ -501,7 +503,10 @@ private fun AssignmentCard(
                     .firstOrNull { it.targetFaceId == target.id }
                     ?.sourceFaceId
 
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(
+                    modifier = Modifier.testTag("target-$targetIndex"),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     Text("Целевое лицо ${targetIndex + 1}", fontWeight = FontWeight.SemiBold)
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -509,12 +514,14 @@ private fun AssignmentCard(
                     ) {
                         sourceFaces.forEachIndexed { sourceIndex, source ->
                             FilterChip(
+                                modifier = Modifier.testTag("assign-$targetIndex-$sourceIndex"),
                                 selected = selectedSourceId == source.id,
                                 onClick = { onAssignSource(target.id, source.id) },
                                 label = { Text("Источник ${sourceIndex + 1}") },
                             )
                         }
                         FilterChip(
+                            modifier = Modifier.testTag("unchanged-$targetIndex"),
                             selected = selectedSourceId == null,
                             onClick = { onSetUnchanged(target.id) },
                             label = { Text("Не менять") },
@@ -527,14 +534,25 @@ private fun AssignmentCard(
                 Text("Применить источник ко всем", fontWeight = FontWeight.SemiBold)
                 Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     sourceFaces.forEachIndexed { index, source ->
-                        OutlinedButton(onClick = { confirmSource = source.id }) { Text("Источник ${index + 1}") }
+                        OutlinedButton(
+                            modifier = Modifier.testTag("apply-all-$index"),
+                            onClick = { confirmSource = source.id },
+                        ) { Text("Источник ${index + 1}") }
                     }
                 }
             }
             Text("Удалить источник до обработки", style = MaterialTheme.typography.labelMedium)
-            Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier
+                    .testTag("remove-sources-row")
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 sourceFaces.forEachIndexed { index, source ->
-                    OutlinedButton(onClick = { onRemoveSource(source.id) }) { Text("Удалить ${index + 1}") }
+                    OutlinedButton(
+                        modifier = Modifier.testTag("remove-source-$index"),
+                        onClick = { onRemoveSource(source.id) },
+                    ) { Text("Удалить ${index + 1}") }
                 }
             }
 
@@ -552,10 +570,16 @@ private fun AssignmentCard(
     }
     confirmSource?.let { sourceId ->
         AlertDialog(
+            modifier = Modifier.testTag("apply-all-dialog"),
             onDismissRequest = { confirmSource = null },
             title = { Text("Применить ко всем?") },
             text = { Text("Выбранный источник заменит все целевые лица. Это действие можно изменить для каждого лица.") },
-            confirmButton = { Button(onClick = { onApplySourceToAll(sourceId); confirmSource = null }) { Text("Применить") } },
+            confirmButton = {
+                Button(
+                    modifier = Modifier.testTag("confirm-apply-all"),
+                    onClick = { onApplySourceToAll(sourceId); confirmSource = null },
+                ) { Text("Применить") }
+            },
             dismissButton = { OutlinedButton(onClick = { confirmSource = null }) { Text("Отмена") } },
         )
     }
