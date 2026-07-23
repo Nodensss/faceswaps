@@ -12,6 +12,7 @@ import com.faceswaplocal.app.data.BitmapLoader
 import com.faceswaplocal.app.data.MlKitLocalFaceDetector
 import com.faceswaplocal.app.domain.DetectedFace
 import com.faceswaplocal.app.domain.FaceAssignmentPlanner
+import com.faceswaplocal.app.domain.AssignmentStateCodec
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.SwapAssignment
 import com.faceswaplocal.app.inference.ModelCatalog
@@ -424,20 +425,11 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
     }
 
     private fun persistAssignments() {
-        savedStateHandle[SAVED_ASSIGNMENTS] = ArrayList(
-            mutableState.value.assignments.map { "${it.targetFaceId.value}|${it.sourceFaceId.value}" },
-        )
+        savedStateHandle[SAVED_ASSIGNMENTS] = AssignmentStateCodec.encode(mutableState.value.assignments)
     }
 
     private fun restoreAssignments(sourceFaces: List<DetectedFace>, targetFaces: List<DetectedFace>): List<SwapAssignment>? {
-        val validSources = sourceFaces.mapTo(mutableSetOf()) { it.id.value }
-        val validTargets = targetFaces.mapTo(mutableSetOf()) { it.id.value }
-        val restored = savedStateHandle.get<ArrayList<String>>(SAVED_ASSIGNMENTS).orEmpty().mapNotNull { value ->
-            val parts = value.split('|', limit = 2)
-            if (parts.size == 2 && parts[0] in validTargets && parts[1] in validSources) {
-                SwapAssignment(FaceId(parts[0]), FaceId(parts[1]))
-            } else null
-        }
+        val restored = AssignmentStateCodec.restore(savedStateHandle.get<ArrayList<String>>(SAVED_ASSIGNMENTS).orEmpty(), sourceFaces, targetFaces)
         return restored.takeIf { it.isNotEmpty() }
     }
 

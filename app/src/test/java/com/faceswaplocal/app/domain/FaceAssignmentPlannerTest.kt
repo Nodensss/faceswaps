@@ -96,5 +96,17 @@ class FaceAssignmentPlannerTest {
         assertEquals(3, result.size)
         assertTrue(result.all { it.sourceFaceId == FaceId("source-3") })
     }
+
+    @Test
+    fun `saved assignment identifiers restore only still valid faces`() {
+        val encoded = AssignmentStateCodec.encode(listOf(
+            SwapAssignment(FaceId("target-1"), FaceId("source-1")),
+            SwapAssignment(FaceId("target-gone"), FaceId("source-gone")),
+        ))
+        assertEquals(
+            listOf(SwapAssignment(FaceId("target-1"), FaceId("source-1"))),
+            AssignmentStateCodec.restore(encoded, listOf(face("source-1")), listOf(face("target-1"))),
+        )
+    }
 }
 

@@ -102,3 +102,18 @@ object FaceAssignmentPlanner {
     }
 }
 
+object AssignmentStateCodec {
+    fun encode(assignments: List<SwapAssignment>): ArrayList<String> = ArrayList(
+        assignments.map { "${it.targetFaceId.value}|${it.sourceFaceId.value}" },
+    )
+
+    fun restore(serialized: List<String>, sourceFaces: List<DetectedFace>, targetFaces: List<DetectedFace>): List<SwapAssignment> {
+        val sources = sourceFaces.mapTo(mutableSetOf()) { it.id.value }
+        val targets = targetFaces.mapTo(mutableSetOf()) { it.id.value }
+        return serialized.mapNotNull { value ->
+            val parts = value.split('|', limit = 2)
+            if (parts.size == 2 && parts[0] in targets && parts[1] in sources) SwapAssignment(FaceId(parts[0]), FaceId(parts[1])) else null
+        }
+    }
+}
+
