@@ -111,6 +111,7 @@ class ModelStore(
 ) {
     private val modelDirectory = File(context.filesDir, MODEL_DIRECTORY_NAME)
     private val operationMutex = Mutex()
+    private val verifiedThisProcess = mutableSetOf<ModelId>()
     private val mutableStatuses = MutableStateFlow(initialStatuses())
 
     val statuses: StateFlow<Map<ModelId, ModelStatus>> = mutableStatuses.asStateFlow()
@@ -203,6 +204,7 @@ class ModelStore(
             }
 
             setStatus(descriptor.id, ModelStatus.Ready(observation.sizeBytes))
+            verifiedThisProcess += descriptor.id
             ModelImportResult.Imported(descriptor.id, observation.sizeBytes)
         } catch (cancelled: CancellationException) {
             setStatus(
@@ -294,6 +296,9 @@ class ModelStore(
         if (!destination.isFile) {
             return ModelStatus.Missing.also { setStatus(descriptor.id, it) }
         }
+        if (descriptor.id in verifiedThisProcess && destination.length() == descriptor.expectedSizeBytes) {
+            return ModelStatus.Ready(destination.length()).also { setStatus(descriptor.id, it) }
+        }
 
         val observation = try {
             ModelFileIntegrity.hash(destination)
@@ -314,6 +319,7 @@ class ModelStore(
             existingCopyRetained = true,
         )
         return if (details == null) {
+            verifiedThisProcess += descriptor.id
             ModelStatus.Ready(observation.sizeBytes)
         } else {
             ModelStatus.Invalid(details)

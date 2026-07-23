@@ -30,6 +30,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
         var accumulated: IntArray? = null
         val sourceEmbeddings = mutableMapOf<FaceId, FloatArray>()
         var last: PhotoFaceSwapResult? = null
+        try {
         for (targetFace in targetsInStableOrder) {
             coroutineContext.ensureActive()
             val assignment = assignments.firstOrNull { it.targetId == targetFace.id } ?: continue
@@ -55,6 +56,10 @@ class OnnxMultiPhotoFaceSwapPipeline(
         }
         return last?.let { result ->
             result.copy(timings = result.timings.copy(totalMs = SystemClock.elapsedRealtime() - started))
+        }
+        } finally {
+            sourceEmbeddings.values.forEach { it.fill(0f) }
+            sourceEmbeddings.clear()
         }
     }
 
