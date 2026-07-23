@@ -1,5 +1,23 @@
 # Benchmarks FaceSwapLocal
 
+## Этап D: multi-face fixture, API 35 x86_64
+
+Дата: 2026-07-23. Вход `stage_d_group_target.png`: 1600×1100, четыре
+детектированных лица, три последовательных назначения InSwapper, T4 без изменения.
+Backend: ONNX Runtime Android 1.26.0 CPU; авиарежим включён.
+
+| Проверка | Результат |
+| --- | --- |
+| Полный instrumentation test | 316,565 с (`OK (1 test)`) |
+| Порядок | одна target-детекция по оригиналу, затем T1 → T2 → T3 поверх накопленного результата |
+| Identity embedding | один ArcFace embedding на уникальный source в рамках задачи; cache очищен и массивы обнулены в `finally` |
+| Геометрия | paste ROI T1/T2 пересекаются; в пересечении остаётся второй paste |
+| Неизменяемые области | T4 побитово идентичен; вне объединения трёх paste ROI изменено 0 пикселей |
+| Артефакт | `docs/reports/img/STAGE_D_MULTI_FACE_RESULT.png` |
+
+Peak Java/native heap и thermal status в этом прогоне не снимались; AVD не является
+reference device и результат времени нельзя переносить на ARM-телефон.
+
 Дата измерений этапа B: 2026-07-19. Дата измерений этапа C: 2026-07-21.
 
 ## Статус reference device
