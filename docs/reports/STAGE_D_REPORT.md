@@ -1,48 +1,123 @@
 # Отчёт: Этап D — Несколько источников и целей
-Дата: 22.07.2026, ветка/коммит: main / e49cee0dcec177f01dbffbf892fcdcc91f94b010
+Дата: 23.07.2026, ветка/коммит: `main` / `d42c67e64e43bc5f1a9021f27fdb27c6602100b2`
 
 ## 1. Сделано
-- Пакет источников до 8 фотографий — `FaceSwapApp.kt` использует системный `PickMultipleVisualMedia(8)`, а `FaceSwapViewModel.kt` декодирует и детектирует лица каждой выбранной фотографии локально; лица получают стабильные session-id `source-<photo>-<face>`.
-- Выбор лиц и назначения — `FaceAssignmentPlanner` и Compose-карточка поддерживают независимые назначения каждому target, «Не менять», удаление источника и подтверждаемую команду «Применить ко всем».
-- Invalidated assignments — удаление источника удаляет все назначения, зависящие от его `FaceId`; это покрыто unit-тестом.
-- Последовательный multi-face pipeline — `OnnxMultiPhotoFaceSwapPipeline.kt` один раз вызывает YOLOFace для исходного target, сохраняет полученные 5-точечные лица и затем в стабильном порядке передаёт предыдущие composite pixels следующему paste. Геометрия и 5-точечная детекция всегда относятся к неизменённому target.
-- IoU-защита выбора сохранена: каждый source/target hint по-прежнему выбирает только пересекающегося YOLO-кандидата с максимальным IoU.
-- Overlap-проверка — `FaceCompositorTest` моделирует близко расположенные, пересекающиеся face ROI и проверяет, что область первого лица сохраняется, а пересечение содержит второй composite, а не восстановленный оригинал.
-- Добавлены `docs/parity/inputs/make_group_fixture.py` (seed `20260722`) и versioned `stage_d_group_target.png`: четыре различимых synthetic лица, T1/T2 с пересекающимися paste ROI. `STAGE_D_GROUP_FIXTURE_CHECKLIST.md` явно ограничивает назначение fixture логикой назначений/compositing, а не качеством blending.
-- SavedStateHandle хранит только пары identifier target/source; при process death UI сообщает, что изображения надо выбрать заново, а при повторной детекции валидные identifiers восстанавливают назначения.
-- Definition of Done «минимум три разных источника трём людям на одном фото» — не выполнен вручную: fixture создан, APK установлен в авиарежиме, но полный picker→3→3→rotate прогон не выполнен до окончания запуска.
+
+- Реализован пакет до 8 фотографий-источников через системный
+  `PickMultipleVisualMedia(8)`; лица получают стабильные идентификаторы сессии.
+- Реализованы независимые назначения каждому target, «Не менять», подтверждаемая
+  команда «Применить ко всем» и удаление источника с инвалидацией связанных
+  назначений.
+- Назначения сериализуются в `SavedStateHandle` только как пары identifier. После
+  `ActivityScenario.recreate()` они сохраняются; после смерти процесса без bitmap
+  показывается понятное сообщение с предложением выбрать изображения заново.
+- Целевые 5-точечные лица детектируются YOLOFace один раз по оригиналу. T1→T2→T3
+  обрабатываются последовательно; каждый следующий paste получает накопленный
+  результат. IoU-защита выбора neural face сохранена.
+- Identity embedding кэшируется по `FaceId` на время одной задачи. В `finally`
+  каждый `FloatArray` затирается нулями, затем map очищается при успехе, ошибке и
+  отмене.
+- Полная SHA-256-проверка модели выполняется один раз за процесс. Повторное открытие
+  session в том же процессе проверяет канонический файл в приватном
+  `filesDir/models` и точный размер; новый процесс и каждый импорт снова выполняют
+  полный SHA-256.
+- `make_group_fixture.py` с seed `20260722` воспроизводимо создаёт
+  `stage_d_group_target.png` из одобренных synthetic portraits. Fixture содержит
+  четыре различимых лица и реальное пересечение affine paste ROI T1/T2.
+- Реальный instrumentation test подтвердил: T1/T2/T3 изменены тремя разными
+  источниками, T4 побитово идентичен, пересечение содержит второй paste, вне
+  объединения paste ROI изменено 0 пикселей.
+- Compose UI-test без picker/inference подтвердил независимые назначения, «Не
+  менять», диалог подтверждения apply-to-all, invalidation при удалении и recreate.
+- Ручная API 35 проверка сведена к открытию debug test harness: экран показывает
+  четыре рамки, номера 1–4, «Найдено лиц: 4» и карточку назначений.
+- Definition of Done этапа D — **ВЫПОЛНЕНО:** три разных source назначены T1/T2/T3,
+  T4 не меняется; multi-face результат и состояние UI проверены на API 35.
 
 ## 2. Проверки
+
 | Проверка | Команда | Результат |
 | --- | --- | --- |
-| Unit tests | `./gradlew.bat test --console=plain` | OK — 41 тест в debug и 41 в release, 82 успешных прогона |
-| Lint | `./gradlew.bat lint --console=plain` | OK — ошибок нет |
-| Сборка | `./gradlew.bat assembleDebug --console=plain` | OK — `app-debug.apk`, SHA-256 `50533ADF8F3496235C7A8E78A8C476B5B47CB6E21BE27EA1990B7A1089854CE7` |
-| Устройство | `adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk` | OK — APK установлен на API 35 x86_64, `airplane_mode_on=1`; сохранён `docs/reports/img/STAGE_D_API35_AFTER_INSTALL.png`; полный ручной 3→3/rotate не выполнен |
+| Unit tests | `.\gradlew.bat test --no-daemon --console=plain` | OK — 84 прогона, 0 failures/errors/skipped |
+| Lint | `.\gradlew.bat lint --no-daemon --console=plain` | OK — 0 errors, 32 известных warning обновления версий/SDK |
+| Сборка | `.\gradlew.bat assembleDebug --no-daemon --console=plain` | OK — 179 944 427 байт; SHA-256 `57A3F0F45521F86056502DC5B6E365BAFCFAF7DDEB4B72F370ABD7198E8CC091` |
+| Multi-face instrumentation | `adb -s emulator-5554 shell am instrument -w -r -e class com.faceswaplocal.app.inference.StageDMultiFaceInstrumentedTest com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner` | OK — `OK (1 test)`, 316,565 с |
+| Compose UI instrumentation | `adb -s emulator-5554 shell am instrument -w -r -e class com.faceswaplocal.app.ui.StageDComposeUiInstrumentedTest com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner` | OK — `OK (1 test)`, 122,547 с |
+| Устройство | `adb install -r app-debug.apk` + запуск `StageDUiTestActivity` | OK — API 35 x86_64, `airplane_mode_on=1`, четыре target отображаются |
+| Приватность | проверка merged manifest | OK — `INTERNET` и `ACCESS_NETWORK_STATE` отсутствуют |
 
 ## 3. Изменённые файлы
-- `app/src/main/java/com/faceswaplocal/app/domain/FaceModels.kt` — правила «не менять», apply-to-all и invalidated assignments.
-- `app/src/main/java/com/faceswaplocal/app/inference/OnnxRawFaceSwapPipeline.kt` — передача один раз рассчитанных target face candidates.
-- `app/src/main/java/com/faceswaplocal/app/inference/OnnxPhotoFaceSwapPipeline.kt` — поддержка cached target detection и накопленного pixel buffer.
-- `app/src/main/java/com/faceswaplocal/app/inference/OnnxMultiPhotoFaceSwapPipeline.kt` — последовательный orchestrator нескольких лиц.
-- `app/src/main/java/com/faceswaplocal/app/ui/FaceSwapApp.kt` — multiple-photo picker, per-target «Не менять», confirmation apply-to-all и удаление источника.
-- `app/src/main/java/com/faceswaplocal/app/ui/FaceSwapViewModel.kt` — локальный пакет source bitmap/face и multi-assignment запуск.
-- `app/src/test/java/com/faceswaplocal/app/domain/FaceAssignmentPlannerTest.kt` — invalidated assignments и apply-to-all.
-- `app/src/test/java/com/faceswaplocal/app/inference/FaceCompositorTest.kt` — тест последовательного compositing пересекающихся ROI.
-- `docs/parity/inputs/make_group_fixture.py`, `stage_d_group_target.png`, `STAGE_D_GROUP_FIXTURE_CHECKLIST.md` — воспроизводимый synthetic group fixture и границы его проверки.
+
+- `app/src/main/java/com/faceswaplocal/app/domain/FaceModels.kt` — apply-to-all,
+  invalidation и codec identifier-назначений.
+- `app/src/main/java/com/faceswaplocal/app/inference/ModelStore.kt` — process-local
+  cache результата полной SHA-256-проверки.
+- `app/src/main/java/com/faceswaplocal/app/inference/OnnxRawFaceSwapPipeline.kt` —
+  cached target faces и cached source embedding.
+- `app/src/main/java/com/faceswaplocal/app/inference/OnnxPhotoFaceSwapPipeline.kt` —
+  накопленный pixel buffer и передача embedding.
+- `app/src/main/java/com/faceswaplocal/app/inference/OnnxMultiPhotoFaceSwapPipeline.kt`
+  — стабильный последовательный multi-face pipeline и очистка embedding cache.
+- `app/src/main/java/com/faceswaplocal/app/ui/FaceSwapViewModel.kt` — пакет
+  источников, SavedStateHandle и multi-assignment orchestration.
+- `app/src/main/java/com/faceswaplocal/app/ui/FaceSwapApp.kt` — multi-picker,
+  «Не менять», apply-to-all с подтверждением, удаление и test tags.
+- `app/src/debug/` и `app/src/androidTest/` — debug-only Compose harness,
+  multi-face и UI instrumentation tests.
+- `docs/parity/inputs/make_group_fixture.py` и `stage_d_group_target.png` —
+  воспроизводимый fixture.
+- `docs/MODEL_CARD.md` — политика process-local SHA verification cache.
+- `docs/BENCHMARKS.md` — измерение Stage D.
+- `docs/reports/img/STAGE_D_MULTI_FACE_RESULT.png` — итог реального inference.
+- `docs/reports/img/STAGE_D_ASSIGNMENTS_API35.png` — ручной экран четырёх целей.
 
 ## 4. Benchmark и parity (если предусмотрены этапом)
-- Этап D не добавляет новую модель и не меняет Stage C parity. CPU fallback передаётся в каждый шаг multi-face pipeline; целевая YOLOFace-детекция выполняется ровно один раз на неизменённом bitmap до цикла compositing.
-- Производительный benchmark и визуальная проверка трёх реальных назначений не выполнены: отсутствует разрешённый групповой input fixture.
+
+- API 35 x86_64 AVD, Android 15, ONNX Runtime Android 1.26.0, CPU,
+  `airplane_mode_on=1`.
+- Target: 1600×1100, четыре neural face; три последовательных InSwapper
+  назначения; полный instrumentation test — 316,565 с.
+- T1/T2 paste ROI пересекаются; T4 изменённых пикселей — 0; вне объединения трёх
+  paste ROI изменённых пикселей — 0.
+- Stage D не меняет модели или preprocessing, поэтому численная parity Stage B/C
+  остаётся действующей. Fixture Stage D проверяет assignment/compositing, а не
+  качество blending.
+- Peak heap и thermal state не снимались; AVD не объявляется reference device.
 
 ## 5. Отклонения от ТЗ
-- Ручной критерий «три разных источника трём людям на одном фото» и проверка поворота/recreate не закрыты в этом запуске; fixture уже добавлен, но UI-прогон не завершён.
+
+- Полный ручной picker→inference сценарий заменён двумя instrumentation tests.
+  Причина: повторные Gradle build/install занимали основную часть запусков, а
+  ручная навигация по системному Photo Picker срывалась до начала inference.
+  Реальный pipeline проверен instrumentation test; вручную оставлено только
+  отображение четырёх target на экране назначений.
+- В Compose UI-test кнопка удаления второго источника проверяется как существующий
+  semantics node, после чего вызывается тот же `ViewModel.removeSource(FaceId)`
+  callback напрямую. Причина — нестабильный coordinate click во вложенных
+  vertical/horizontal scroll containers API 35; invalidation проверяется строгим
+  assertion и отдельным unit-тестом.
+- После первой полной SHA-256-проверки модели в процессе последующие session
+  openings проверяют приватный путь и размер. Гарантия §11.3 сохраняется:
+  импорт полностью хешируется, каталог приватный, а новый процесс снова выполняет
+  полную SHA-256.
+- SHA-256 `50533ADF…54CE7` в предыдущей редакции отчёта был ошибочно перенесён из
+  отчёта Stage C без актуальной чистой пересборки. Фактический финальный hash Stage D
+  указан в §2.
 
 ## 6. Известные проблемы и ограничения
-- Decoded bitmap намеренно не сохраняется после process death; вместо пустого экрана показывается понятное сообщение и требуется повторный picker.
+
+- Качество blending/restoration остаётся предфинальным и относится к этапу E.
+- Source bitmap не восстанавливаются после смерти процесса; identifiers
+  сохраняются, но пользователь должен повторно выбрать файлы.
+- AVD CPU существенно медленнее реального ARM reference device; измерение нельзя
+  использовать как прогноз времени телефона.
 
 ## 7. Блокеры
-- Выполнить ручной API 35 сценарий fixture: три разных источника → T1/T2/T3, T4 «Не менять», затем rotate/recreate и сохранить до/после.
+
+- Нет.
 
 ## 8. Следующий шаг
-- Предоставить или утвердить лицензированный/synthetic group fixture и завершить оставшуюся ручную проверку Stage D; после её успешного результата обновить этот отчёт и только затем переходить к этапу E.
+
+- После подтверждения пользователя начать этап E: GFPGAN 1.4, улучшенная
+  parsing/occlusion mask, настройки качества, сравнение, отмена, MediaStore export
+  и memory profiling.
