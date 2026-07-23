@@ -27,8 +27,8 @@ import com.faceswaplocal.app.inference.OnnxMultiPhotoFaceSwapPipeline
 import com.faceswaplocal.app.inference.MultiPhotoAssignment
 import com.faceswaplocal.app.inference.MultiPhotoSource
 import com.faceswaplocal.app.inference.MultiPhotoTarget
+import com.faceswaplocal.app.inference.MultiPhotoFaceSwapResult
 import com.faceswaplocal.app.inference.PhotoFaceSwapRequest
-import com.faceswaplocal.app.inference.PhotoFaceSwapResult
 import com.faceswaplocal.app.inference.RequestedInferenceBackend
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -70,7 +70,7 @@ data class FaceSwapUiState(
     val modelStatuses: Map<ModelId, ModelStatus> = ModelCatalog.all.associate { it.id to ModelStatus.Missing },
     val modelMessage: String? = null,
     val photoSwapPhase: PhotoSwapPhase = PhotoSwapPhase.IDLE,
-    val photoSwapResult: PhotoFaceSwapResult? = null,
+    val photoSwapResult: MultiPhotoFaceSwapResult? = null,
     val photoSwapError: String? = null,
 ) {
     val canAnalyze: Boolean
@@ -395,12 +395,12 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         bottom = bounds.bottom * bitmap.height.toDouble(),
     )
 
-    private fun releasePhotoResultDeferred(result: PhotoFaceSwapResult?) {
+    private fun releasePhotoResultDeferred(result: MultiPhotoFaceSwapResult?) {
         result ?: return
         mainHandler.post { recycleBitmap(result.finalBitmap) }
     }
 
-    private fun releasePhotoResultNow(result: PhotoFaceSwapResult?) {
+    private fun releasePhotoResultNow(result: MultiPhotoFaceSwapResult?) {
         recycleBitmap(result?.finalBitmap)
     }
 

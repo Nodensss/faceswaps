@@ -65,7 +65,7 @@ import com.faceswaplocal.app.inference.ModelCatalog
 import com.faceswaplocal.app.inference.ModelDescriptor
 import com.faceswaplocal.app.inference.ModelId
 import com.faceswaplocal.app.inference.ModelStatus
-import com.faceswaplocal.app.inference.PhotoFaceSwapResult
+import com.faceswaplocal.app.inference.MultiPhotoFaceSwapResult
 import kotlin.math.min
 
 @Composable
@@ -658,7 +658,7 @@ private fun PhotoSwapCard(
 }
 
 @Composable
-private fun PhotoSwapResultView(result: PhotoFaceSwapResult) {
+private fun PhotoSwapResultView(result: MultiPhotoFaceSwapResult) {
     val image = remember(result.finalBitmap) { result.finalBitmap.asImageBitmap() }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(

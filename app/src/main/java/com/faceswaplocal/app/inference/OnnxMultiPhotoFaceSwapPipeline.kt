@@ -11,6 +11,21 @@ data class MultiPhotoTarget(val id: FaceId, val faceHint: FaceBox)
 data class MultiPhotoAssignment(val targetId: FaceId, val sourceId: FaceId)
 
 /**
+ * Stage D coordinator output delivered to the UI layer. It intentionally excludes the
+ * source identity embedding: the ViewModel never needs it, so it is not carried past the
+ * pipeline boundary. [pasteRois] lists the composited paste region of every applied swap
+ * in stable target order.
+ */
+data class MultiPhotoFaceSwapResult(
+    val finalBitmap: Bitmap,
+    val pasteRois: List<CompositeRoi>,
+    val detectorBackend: InferenceBackend,
+    val recognizerBackend: InferenceBackend,
+    val swapperBackend: InferenceBackend,
+    val timings: PhotoFaceSwapTimings,
+)
+
+/**
  * Stage D coordinator. It detects the target exactly once from the untouched image,
  * then composites stable target order onto the accumulated pixel buffer.
  */
@@ -24,12 +39,13 @@ class OnnxMultiPhotoFaceSwapPipeline(
         targetsInStableOrder: List<MultiPhotoTarget>,
         assignments: List<MultiPhotoAssignment>,
         backend: RequestedInferenceBackend,
-    ): PhotoFaceSwapResult? {
+    ): MultiPhotoFaceSwapResult? {
         val started = SystemClock.elapsedRealtime()
         val (resolvedTargets, _) = rawPipeline.detectFaces(target, backend)
         var accumulated: IntArray? = null
         val sourceEmbeddings = mutableMapOf<FaceId, FloatArray>()
         var last: PhotoFaceSwapResult? = null
+        val pasteRois = mutableListOf<CompositeRoi>()
         try {
         for (targetFace in targetsInStableOrder) {
             coroutineContext.ensureActive()
@@ -50,16 +66,28 @@ class OnnxMultiPhotoFaceSwapPipeline(
             last?.finalBitmap?.recycleSafely()
             last = next
             sourceEmbeddings.putIfAbsent(source.id, next.sourceEmbedding)
+            pasteRois += next.pasteRoi
             accumulated = IntArray(next.finalBitmap.width * next.finalBitmap.height).also {
                 next.finalBitmap.getPixels(it, 0, next.finalBitmap.width, 0, 0, next.finalBitmap.width, next.finalBitmap.height)
             }
         }
         return last?.let { result ->
-            result.copy(timings = result.timings.copy(totalMs = SystemClock.elapsedRealtime() - started))
+            MultiPhotoFaceSwapResult(
+                finalBitmap = result.finalBitmap,
+                pasteRois = pasteRois.toList(),
+                detectorBackend = result.detectorBackend,
+                recognizerBackend = result.recognizerBackend,
+                swapperBackend = result.swapperBackend,
+                timings = result.timings.copy(totalMs = SystemClock.elapsedRealtime() - started),
+            )
         }
         } finally {
+            // Zero every identity embedding this task held: the per-source cache and the
+            // final result copy that is not handed to the ViewModel. Runs on success,
+            // error and cancellation.
             sourceEmbeddings.values.forEach { it.fill(0f) }
             sourceEmbeddings.clear()
+            last?.sourceEmbedding?.fill(0f)
         }
     }
 
