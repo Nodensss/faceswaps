@@ -74,6 +74,17 @@ enum class WarpTemplate(internal val normalizedPoints: List<Point2>) {
             Point2(0.61507734, 0.72034453),
         ),
     ),
+
+    /** FaceFusion `ffhq_512` template used by the GFPGAN face enhancer (Stage E1). */
+    FFHQ_512(
+        listOf(
+            Point2(0.37691676, 0.46864664),
+            Point2(0.62285697, 0.46912813),
+            Point2(0.50123859, 0.61331904),
+            Point2(0.39308822, 0.72541100),
+            Point2(0.61150205, 0.72490465),
+        ),
+    ),
 }
 
 object FaceGeometry {

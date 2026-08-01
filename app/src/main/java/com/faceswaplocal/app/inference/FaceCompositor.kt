@@ -34,6 +34,13 @@ data class ColorMatchedCrop(
     val adjustment: FaceColorAdjustment,
 )
 
+/** Result of [FaceCompositor.pasteBack]: the blended image and the warped alpha it wrote. */
+data class PasteBackResult(
+    val pixels: IntArray,
+    val warpedMask: FloatArray,
+    val roi: CompositeRoi,
+)
+
 /**
  * Pure-array Stage C output. [warpedMask] has the same dimensions as [pixels], while
  * [cropMask] and [colorMatchedCrop] use the swapper crop dimensions supplied to
@@ -70,80 +77,107 @@ object FaceCompositor {
         cropWidth: Int,
         cropHeight: Int,
         targetToCrop: AffineMatrix,
+        regionMask: FloatArray? = null,
     ): FaceCompositeResult {
         requireImage(targetPixels, targetWidth, targetHeight, "Target")
         requireImage(targetCropPixels, cropWidth, cropHeight, "Aligned target crop")
         requireImage(swappedCropPixels, cropWidth, cropHeight, "Swapped crop")
         requireFinite(targetToCrop)
 
-        val cropMask = createBoxMask(cropWidth, cropHeight)
+        val boxMask = createBoxMask(cropWidth, cropHeight)
+        // Colour-match statistics stay on the box mask so Stage C colour parity is stable;
+        // the blend mask additionally intersects the BiSeNet region mask (Stage E1) to
+        // remove the visible hair/temple seam of a box-only paste.
         val colorMatch = matchCropColors(
             targetCropPixels = targetCropPixels,
             swappedCropPixels = swappedCropPixels,
-            mask = cropMask,
+            mask = boxMask,
             width = cropWidth,
             height = cropHeight,
         )
-        val roi = calculateRoi(
-            targetWidth = targetWidth,
-            targetHeight = targetHeight,
+        val blendMask = intersectMask(boxMask, regionMask, cropWidth, cropHeight)
+        val paste = pasteBack(
+            basePixels = targetPixels,
+            baseWidth = targetWidth,
+            baseHeight = targetHeight,
+            cropPixels = colorMatch.pixels,
+            cropMask = blendMask,
             cropWidth = cropWidth,
             cropHeight = cropHeight,
-            targetToCrop = targetToCrop,
+            baseToCrop = targetToCrop,
         )
-        val resultPixels = targetPixels.copyOf()
-        val warpedMask = FloatArray(targetPixels.size)
-
-        for (targetY in roi.top until roi.bottom) {
-            for (targetX in roi.left until roi.right) {
-                val cropPoint = targetToCrop.map(Point2(targetX.toDouble(), targetY.toDouble()))
-                val alpha = sampleMaskConstantZero(
-                    mask = cropMask,
-                    width = cropWidth,
-                    height = cropHeight,
-                    x = cropPoint.x,
-                    y = cropPoint.y,
-                ).coerceIn(0.0, 1.0)
-                val targetIndex = targetY * targetWidth + targetX
-                warpedMask[targetIndex] = alpha.toFloat()
-                if (alpha <= 0.0) continue
-
-                val cropColor = sampleArgbEdgeReplicate(
-                    pixels = colorMatch.pixels,
-                    width = cropWidth,
-                    height = cropHeight,
-                    x = cropPoint.x,
-                    y = cropPoint.y,
-                )
-                val targetColor = targetPixels[targetIndex]
-                val inverseAlpha = 1.0 - alpha
-                val red = (
-                    channel(targetColor, RED_SHIFT) * inverseAlpha + cropColor.red * alpha
-                    ).coerceIn(0.0, 255.0).toInt()
-                val green = (
-                    channel(targetColor, GREEN_SHIFT) * inverseAlpha + cropColor.green * alpha
-                    ).coerceIn(0.0, 255.0).toInt()
-                val blue = (
-                    channel(targetColor, BLUE_SHIFT) * inverseAlpha + cropColor.blue * alpha
-                    ).coerceIn(0.0, 255.0).toInt()
-                resultPixels[targetIndex] =
-                    (targetColor and ALPHA_MASK) or
-                        (red shl RED_SHIFT) or
-                        (green shl GREEN_SHIFT) or
-                        blue
-            }
-        }
 
         return FaceCompositeResult(
-            pixels = resultPixels,
+            pixels = paste.pixels,
             width = targetWidth,
             height = targetHeight,
-            cropMask = cropMask,
-            warpedMask = warpedMask,
+            cropMask = blendMask,
+            warpedMask = paste.warpedMask,
             colorMatchedCrop = colorMatch.pixels,
             colorAdjustment = colorMatch.adjustment,
-            roi = roi,
+            roi = paste.roi,
         )
+    }
+
+    /** Element-wise `min(box, region)` when a region mask is supplied, else the box mask. */
+    private fun intersectMask(
+        boxMask: FloatArray,
+        regionMask: FloatArray?,
+        width: Int,
+        height: Int,
+    ): FloatArray {
+        if (regionMask == null) return boxMask
+        require(regionMask.size == boxMask.size) {
+            "Region mask size must match the ${width}x$height crop"
+        }
+        return FloatArray(boxMask.size) { index -> min(boxMask[index], regionMask[index]) }
+    }
+
+    /**
+     * Warps [cropPixels] back through [baseToCrop] and alpha-blends it into a copy of
+     * [basePixels], writing only inside the crop's inverse bounding box. The base alpha
+     * channel is preserved. Used by both the Stage C swap composite and the Stage E1
+     * enhancer paste.
+     */
+    fun pasteBack(
+        basePixels: IntArray,
+        baseWidth: Int,
+        baseHeight: Int,
+        cropPixels: IntArray,
+        cropMask: FloatArray,
+        cropWidth: Int,
+        cropHeight: Int,
+        baseToCrop: AffineMatrix,
+    ): PasteBackResult {
+        requireImage(basePixels, baseWidth, baseHeight, "Base")
+        requireImage(cropPixels, cropWidth, cropHeight, "Paste crop")
+        require(cropMask.size == cropWidth * cropHeight) { "Mask size must match crop dimensions" }
+        requireFinite(baseToCrop)
+
+        val roi = calculateRoi(baseWidth, baseHeight, cropWidth, cropHeight, baseToCrop)
+        val resultPixels = basePixels.copyOf()
+        val warpedMask = FloatArray(basePixels.size)
+
+        for (baseY in roi.top until roi.bottom) {
+            for (baseX in roi.left until roi.right) {
+                val cropPoint = baseToCrop.map(Point2(baseX.toDouble(), baseY.toDouble()))
+                val alpha = sampleMaskConstantZero(cropMask, cropWidth, cropHeight, cropPoint.x, cropPoint.y)
+                    .coerceIn(0.0, 1.0)
+                val baseIndex = baseY * baseWidth + baseX
+                warpedMask[baseIndex] = alpha.toFloat()
+                if (alpha <= 0.0) continue
+
+                val cropColor = sampleArgbEdgeReplicate(cropPixels, cropWidth, cropHeight, cropPoint.x, cropPoint.y)
+                val baseColor = basePixels[baseIndex]
+                val inverseAlpha = 1.0 - alpha
+                val red = (channel(baseColor, RED_SHIFT) * inverseAlpha + cropColor.red * alpha).coerceIn(0.0, 255.0).toInt()
+                val green = (channel(baseColor, GREEN_SHIFT) * inverseAlpha + cropColor.green * alpha).coerceIn(0.0, 255.0).toInt()
+                val blue = (channel(baseColor, BLUE_SHIFT) * inverseAlpha + cropColor.blue * alpha).coerceIn(0.0, 255.0).toInt()
+                resultPixels[baseIndex] =
+                    (baseColor and ALPHA_MASK) or (red shl RED_SHIFT) or (green shl GREEN_SHIFT) or blue
+            }
+        }
+        return PasteBackResult(resultPixels, warpedMask, roi)
     }
 
     /** FaceFusion 3.7.1 box mask with blur 0.3 and zero padding. */
@@ -322,7 +356,7 @@ object FaceCompositor {
         return CompositeRoi(left, top, right, bottom)
     }
 
-    private fun gaussianBlurReflect101(
+    internal fun gaussianBlurReflect101(
         input: FloatArray,
         width: Int,
         height: Int,

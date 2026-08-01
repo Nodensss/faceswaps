@@ -551,7 +551,7 @@ internal fun faceBoxIntersectionOverUnion(first: FaceBox, second: FaceBox): Doub
 }
 
 /** Pixel transforms kept independent from Canvas/GPU to make parity deterministic. */
-private object BitmapSampling {
+internal object BitmapSampling {
     fun detectorInput(bitmap: Bitmap, detectorSize: Int): FloatArray {
         val source = PixelSource(bitmap)
         val scale = min(
@@ -595,6 +595,35 @@ private object BitmapSampling {
             output[index] = (red - mean) / standardDeviation
             output[planeSize + index] = (green - mean) / standardDeviation
             output[2 * planeSize + index] = (blue - mean) / standardDeviation
+        }
+        return output
+    }
+
+    /**
+     * Bilinear resize to [size]x[size] with RGB per-channel normalisation
+     * `(x/255 - mean) / std`, packed NCHW. Ports FaceFusion `create_region_mask`
+     * preprocessing (BiSeNet parser uses ImageNet statistics).
+     */
+    fun rgbTensorResized(
+        bitmap: Bitmap,
+        size: Int,
+        meanRgb: FloatArray,
+        stdRgb: FloatArray,
+    ): FloatArray {
+        require(meanRgb.size == 3 && stdRgb.size == 3)
+        val source = PixelSource(bitmap)
+        val planeSize = size * size
+        val output = FloatArray(3 * planeSize)
+        for (y in 0 until size) {
+            val sourceY = (y + 0.5) * source.height / size - 0.5
+            for (x in 0 until size) {
+                val sourceX = (x + 0.5) * source.width / size - 0.5
+                val color = source.sample(sourceX, sourceY)
+                val index = y * size + x
+                output[index] = (color.red / 255f - meanRgb[0]) / stdRgb[0]
+                output[planeSize + index] = (color.green / 255f - meanRgb[1]) / stdRgb[1]
+                output[2 * planeSize + index] = (color.blue / 255f - meanRgb[2]) / stdRgb[2]
+            }
         }
         return output
     }

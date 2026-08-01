@@ -340,6 +340,8 @@ private fun modelDisplayName(id: ModelId): String = when (id) {
     ModelId.ARCFACE_W600K_R50 -> "ArcFace w600k_r50 · embedding"
     ModelId.HYPERSWAP_1A_256 -> "HyperSwap 1a · основной кандидат"
     ModelId.INSWAPPER_128_FP16 -> "InSwapper 128 fp16 · активный fallback"
+    ModelId.GFPGAN_1_4 -> "GFPGAN 1.4 · восстановление (E1)"
+    ModelId.BISENET_RESNET_34 -> "BiSeNet ResNet-34 · маска (E1)"
 }
 
 private fun modelStatusText(status: ModelStatus): String = when (status) {

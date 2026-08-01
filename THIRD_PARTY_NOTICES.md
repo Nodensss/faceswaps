@@ -135,11 +135,51 @@ version: 8.1.0
 вес не распространяется и устанавливается только локальным импортом после проверки
 SHA-256.
 
+## GFPGAN 1.4 (восстановление лица, этап E1)
+
+Файл модели:
+<https://huggingface.co/facefusion/models-3.0.0/blob/main/gfpgan_1.4.onnx>
+Upstream-проект: <https://github.com/TencentARC/GFPGAN>
+
+FaceFusion 3.7.1 маркирует модель одним словом:
+
+```text
+vendor: TencentARC
+license: Apache-2.0
+year: 2022
+```
+
+Этот ярлык неполон. GFPGAN — **составная** лицензия, так как включает компоненты с
+собственными условиями:
+
+- сам GFPGAN — Apache-2.0
+  (<https://github.com/TencentARC/GFPGAN/blob/master/LICENSE>), дословно:
+  «GFPGAN is released under Apache License Version 2.0.»;
+- архитектура декодера основана на StyleGAN2 под **NVIDIA Source Code License**
+  (Non-Commercial): <https://nvlabs.github.io/stylegan2/license.html>;
+- компоненты из DFDNet — **CC-BY-NC-SA 4.0**:
+  <https://creativecommons.org/licenses/by-nc-sa/4.0/>.
+
+Из-за NVIDIA-NC и CC-BY-NC-SA результирующее использование ограничено **личным
+некоммерческим**. Вес не включается в репозиторий или APK; импорт локальный.
+
+## BiSeNet ResNet-34 (face parser маски, этап E1)
+
+Файл модели:
+<https://huggingface.co/facefusion/models-3.0.0/blob/main/bisenet_resnet_34.onnx>
+Upstream: <https://github.com/CoinCheung/BiSeNet>,
+<https://github.com/zllrunning/face-parsing.PyTorch>
+
+FaceFusion 3.7.1 маркирует модель как `MIT`; первоисточники также распространяются под
+MIT (сверено 23.07.2026). MIT допускает распространение, но для единообразия проекта
+вес всё равно не коммитится и импортируется локально.
+
 ## Операционное решение проекта
 
 - В репозитории действует исключение `*.onnx`.
 - APK содержит ONNX Runtime, но не содержит `yoloface_8n`,
-  `arcface_w600k_r50`, `hyperswap_1a_256` или `inswapper_128_fp16`.
+  `arcface_w600k_r50`, `hyperswap_1a_256`, `inswapper_128_fp16`, `gfpgan_1.4` или
+  `bisenet_resnet_34`.
 - Приложение не имеет `INTERNET` и не скачивает веса.
 - Для каждого веса разрешён только явный picker-import; приложение принимает лишь
   размер и SHA-256 из `docs/MODEL_CARD.md`.

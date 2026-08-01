@@ -1,0 +1,44 @@
+{
+  "input_crop": {
+    "file": "inputs/pair_01_enhancer_input_512.png",
+    "size": [
+      512,
+      512
+    ],
+    "template": "ffhq_512",
+    "sha256": "5987781f96010ceddbf7445b26bb5420b56e20138d9603a352a48a57f0fb2ec8",
+    "source": "ffhq_512 warp of pair_01 Stage C swapped frame (inswapper_final_box_03.png)"
+  },
+  "gfpgan": {
+    "model": "gfpgan_1.4",
+    "shape": [
+      3,
+      512,
+      512
+    ],
+    "range": "[-1,1] RGB CHW",
+    "min": -1.0121662616729736,
+    "max": 0.9377533793449402,
+    "mean": 0.04197603464126587,
+    "sha256_f32le": "defb53ec3577abc06230a2680dd1e7fd5fe69a7a3be9710a992ce850ccbd0899"
+  },
+  "parser": {
+    "model": "bisenet_resnet_34",
+    "region_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      10,
+      11,
+      12,
+      13
+    ],
+    "region_pixels": 86231,
+    "argmax_sha256": "a087bcca8f74103c253fb495c9242460a6a6caad88d75ce4cab8921b25c3936b"
+  },
+  "provider": "CPUExecutionProvider",
+  "onnxruntime": "1.26.0"
+}

@@ -5,6 +5,8 @@ enum class ModelId(val stableId: String) {
     ARCFACE_W600K_R50("arcface_w600k_r50"),
     HYPERSWAP_1A_256("hyperswap_1a_256"),
     INSWAPPER_128_FP16("inswapper_128_fp16"),
+    GFPGAN_1_4("gfpgan_1.4"),
+    BISENET_RESNET_34("bisenet_resnet_34"),
 }
 
 enum class ModelRole {
@@ -12,6 +14,8 @@ enum class ModelRole {
     FACE_RECOGNIZER,
     FACE_SWAPPER,
     FALLBACK_FACE_SWAPPER,
+    FACE_ENHANCER,
+    FACE_PARSER,
 }
 
 data class ModelDescriptor(
@@ -75,11 +79,29 @@ object ModelCatalog {
         expectedSha256 = "c4eccca86ad177586c85c28bf1a64a9d9ed237e283a15818d831f7facfd3f420",
     )
 
+    val gfpgan14 = ModelDescriptor(
+        id = ModelId.GFPGAN_1_4,
+        role = ModelRole.FACE_ENHANCER,
+        fileName = "gfpgan_1.4.onnx",
+        expectedSizeBytes = 340_299_087L,
+        expectedSha256 = "accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385",
+    )
+
+    val bisenetResnet34 = ModelDescriptor(
+        id = ModelId.BISENET_RESNET_34,
+        role = ModelRole.FACE_PARSER,
+        fileName = "bisenet_resnet_34.onnx",
+        expectedSizeBytes = 93_632_546L,
+        expectedSha256 = "4a0b8c958a3c938913bd06a8365dbb3c8761afba6ecbf0d14b3b1f77eb230c96",
+    )
+
     val all: List<ModelDescriptor> = listOf(
         yoloface8n,
         arcfaceW600kR50,
         hyperswap1a256,
         inswapper128Fp16,
+        gfpgan14,
+        bisenetResnet34,
     )
 
     private val byId = all.associateBy(ModelDescriptor::id)
