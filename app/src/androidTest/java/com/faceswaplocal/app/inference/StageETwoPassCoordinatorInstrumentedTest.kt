@@ -44,9 +44,13 @@ class StageETwoPassCoordinatorInstrumentedTest {
         val sourceBitmaps = (1..3).map { bitmap("inputs/pair_%02d_source.png".format(it)) }
         val sourceEmbeddings = mutableListOf<FloatArray>()
         val originalPixels = target.pixels()
-        val outputDirectory = File(context.filesDir, OUTPUT_DIRECTORY).apply { mkdirs() }
+        val outputDirectory = File(context.filesDir, OUTPUT_DIRECTORY).apply {
+            deleteRecursively()
+            check(mkdirs()) { "Could not create $absolutePath" }
+        }
         var baseline: MultiPhotoFaceSwapResult? = null
         var restored: MultiPhotoFaceSwapResult? = null
+        var maximumRestored: MultiPhotoFaceSwapResult? = null
         try {
             val detected = raw.detectFaces(target, RequestedInferenceBackend.CPU_ONLY).first
             assertEquals("fixture must contain exactly four neural faces", 4, detected.size)
@@ -141,13 +145,54 @@ class StageETwoPassCoordinatorInstrumentedTest {
             )
             savePng(restored.finalBitmap, File(outputDirectory, "strength_0_8.png"))
 
+            val maximumEventStart = listener.size
+            val maximumStarted = System.nanoTime()
+            maximumRestored = requireNotNull(
+                coordinator.process(
+                    target = target,
+                    sources = sources,
+                    targetsInStableOrder = targets,
+                    assignments = assignments,
+                    backend = RequestedInferenceBackend.CPU_ONLY,
+                    restorationStrength = MAXIMUM_RESTORATION_STRENGTH,
+                ),
+            )
+            val maximumMs = (System.nanoTime() - maximumStarted) / 1_000_000L
+            val maximumEvents = listener.eventsFrom(maximumEventStart)
+            assertRestoredSessionEvents(maximumEvents)
+            val maximumMetrics = verifyRun(
+                label = "strength_1_0",
+                result = maximumRestored,
+                strength = MAXIMUM_RESTORATION_STRENGTH,
+                originalPixels = originalPixels,
+                targetWidth = target.width,
+                targetHeight = target.height,
+                orderedTargets = orderedTargets,
+                targetIds = targetIds,
+                sourceEmbeddings = sourceEmbeddings,
+                raw = raw,
+                elapsedMs = maximumMs,
+            )
+            savePng(maximumRestored.finalBitmap, File(outputDirectory, "strength_1_0.png"))
+
             for (targetIndex in 0..2) {
                 val baselineIdentity = baselineMetrics.getJSONArray("identity").getJSONObject(targetIndex)
                 val restoredIdentity = restoredMetrics.getJSONArray("identity").getJSONObject(targetIndex)
+                val maximumIdentity = maximumMetrics.getJSONArray("identity").getJSONObject(targetIndex)
                 assertEquals(
                     "restoration must not change nearest source for T${targetIndex + 1}",
                     baselineIdentity.getInt("nearest_source"),
                     restoredIdentity.getInt("nearest_source"),
+                )
+                assertEquals(
+                    "maximum restoration must not change nearest source for T${targetIndex + 1}",
+                    baselineIdentity.getInt("nearest_source"),
+                    maximumIdentity.getInt("nearest_source"),
+                )
+                assertEquals(
+                    "maximum restoration must preserve the complete source ranking for T${targetIndex + 1}",
+                    baselineIdentity.getJSONArray("rank").toString(),
+                    maximumIdentity.getJSONArray("rank").toString(),
                 )
             }
 
@@ -158,15 +203,26 @@ class StageETwoPassCoordinatorInstrumentedTest {
                 .put("configuration_difference", "FaceFusion desktop defaults to enhancing all detected faces; Android checkpoint enhances assigned targets only")
                 .put("baseline", baselineMetrics)
                 .put("restored", restoredMetrics)
+                .put("maximum_restored", maximumMetrics)
                 .put("identity_deltas", identityDeltas(baselineMetrics, restoredMetrics))
+                .put("maximum_identity_deltas", identityDeltas(baselineMetrics, maximumMetrics))
+                .put(
+                    "identity_margin_baseline",
+                    JSONObject()
+                        .put("strength_0", identityMargins(baselineMetrics))
+                        .put("strength_0_8", identityMargins(restoredMetrics))
+                        .put("strength_1_0", identityMargins(maximumMetrics)),
+                )
                 .put("baseline_session_events", JSONArray(baselineEvents))
                 .put("restored_session_events", JSONArray(restoredEvents))
+                .put("maximum_restored_session_events", JSONArray(maximumEvents))
                 .put("max_simultaneous_heavy_sessions", listener.maxSimultaneousHeavySessions)
             File(outputDirectory, "checkpoint_1_results.json").writeText(metrics.toString(2))
             assertEquals("at most one swapper/restorer/parser session may be open", 1, listener.maxSimultaneousHeavySessions)
         } finally {
             baseline?.finalBitmap?.recycleSafely()
             restored?.finalBitmap?.recycleSafely()
+            maximumRestored?.finalBitmap?.recycleSafely()
             sourceEmbeddings.forEach { it.fill(0f) }
             sourceBitmaps.forEach { bitmap -> bitmap.recycleSafely() }
             target.recycleSafely()
@@ -308,6 +364,21 @@ class StageETwoPassCoordinatorInstrumentedTest {
         }
     }
 
+    private fun identityMargins(run: JSONObject): JSONArray {
+        val identities = run.getJSONArray("identity")
+        return JSONArray().also { output ->
+            for (index in 0 until identities.length()) {
+                val identity = identities.getJSONObject(index)
+                output.put(
+                    JSONObject()
+                        .put("target", identity.getInt("target"))
+                        .put("nearest_source", identity.getInt("nearest_source"))
+                        .put("expected_margin", identity.getDouble("expected_margin")),
+                )
+            }
+        }
+    }
+
     private fun orderFixtureFaces(faces: List<DetectedFace5>): List<DetectedFace5> =
         faces.sortedBy { (it.box.left + it.box.right) / 2.0 }.let { byX ->
             val right = byX.takeLast(2).sortedBy { (it.box.top + it.box.bottom) / 2.0 }
@@ -442,6 +513,7 @@ class StageETwoPassCoordinatorInstrumentedTest {
 
     private companion object {
         const val RESTORATION_STRENGTH = 0.8f
+        const val MAXIMUM_RESTORATION_STRENGTH = 1f
         const val OUTPUT_DIRECTORY = "stage-e-checkpoint-1"
         const val INSWAPPER_FILE = "inswapper_128_fp16.onnx"
         const val GFPGAN_FILE = "gfpgan_1.4.onnx"

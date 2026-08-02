@@ -8,17 +8,27 @@ InSwapper (T1/T2/T3), T4 — `Не менять`. ONNX Runtime Android 1.26.0, C
 
 | Прогон | Состав | Время coordinator | Пространственные инварианты |
 | --- | --- | ---: | --- |
-| Сила `0` | 3 swap, GFPGAN/BiSeNet не открывались | 147 820 ms | вне union ROI: 0; T4: 0 изменений |
-| Сила `0.8` | 3 swap, затем 3× GFPGAN + 3× BiSeNet | 311 842 ms | вне union(swap, enhance) ROI: 0; T4: 0 изменений |
+| Сила `0` | 3 swap, GFPGAN/BiSeNet не открывались | 170 439 ms | вне union ROI: 0; T4: 0 изменений |
+| Сила `0.8` | 3 swap, затем 3× GFPGAN + 3× BiSeNet | 322 886 ms | вне union(swap, enhance) ROI: 0; T4: 0 изменений |
+| Сила `1.0` | 3 swap, затем 3× GFPGAN + 3× BiSeNet | 328 106 ms | вне union(swap, enhance) ROI: 0; T4: 0 изменений |
 
-Полный instrumentation runner с подготовкой и шестью финальными ArcFace embeddings:
-507,194 с, `OK (1 test)`. Журнал реальных open/close событий подтвердил, что последняя
+Полный instrumentation runner с подготовкой и девятью финальными ArcFace embeddings:
+887,171 с, `OK (1 test)`. Журнал реальных open/close событий подтвердил, что последняя
 InSwapper session закрылась до первой GFPGAN session; максимум одновременно открытых
 среди InSwapper/GFPGAN/BiSeNet — `1`. Ожидаемый source остался ближайшим для T1/T2/T3
-при обеих силах. Peak heap и thermal не измерялись; AVD не является reference device.
+при всех трёх силах. Peak heap и thermal не измерялись; AVD не является reference device.
 Потенциальный FFHQ ROI неназначенного T4 также передан compositor как глобальная
 no-write область. Полные числа:
 `docs/parity/android/api35-x86_64/checkpoint_1/checkpoint_1_results.json`.
+
+| Baseline ArcFace margin | Сила `0` | Сила `0.8` | Сила `1.0` |
+| --- | ---: | ---: | ---: |
+| T1→S1 | 0,520990 | 0,485556 | 0,465453 |
+| T2→S2 | 0,723044 | 0,665249 | 0,645125 |
+| T3→S3 | 0,600909 | 0,526425 | 0,502646 |
+
+Это неизменяемая AVD-база. На первом reference device таблица повторяется на разрешённом
+реальном фото отдельным набором результатов; подменять ею эти значения нельзя.
 
 ## Этап D: multi-face fixture, API 35 x86_64
 
