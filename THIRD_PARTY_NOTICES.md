@@ -135,14 +135,60 @@ version: 8.1.0
 вес не распространяется и устанавливается только локальным импортом после проверки
 SHA-256.
 
+## GFPGAN 1.4 (parity-ядро E1)
+
+Файл reference-набора:
+<https://huggingface.co/facefusion/models-3.0.0/blob/728b9659bd9691bf32cbf7f61af478d94b7ba81e/gfpgan_1.4.onnx>.
+Upstream и полный лицензионный файл:
+<https://github.com/TencentARC/GFPGAN/blob/master/LICENSE>.
+
+FaceFusion 3.7.1 дословно маркирует модель:
+
+```text
+vendor: TencentARC
+license: Apache-2.0
+year: 2022
+```
+
+Полный upstream LICENSE начинается с уточнения, что GFPGAN лицензирован по Apache-2.0,
+кроме перечисленных сторонних компонентов. В нём отдельно перечислены:
+
+- GFPGAN и BasicSR — `Apache-2.0`;
+- StyleGAN2-компоненты — `NVIDIA Source Code License-NC`;
+- DFDNet-компоненты — `CC-BY-NC-SA-4.0`.
+
+Из-за non-commercial условий сторонних компонентов проект использует модель только
+лично и некоммерчески. Вес не включается в Git или APK и для parity помещается
+разработчиком только в приватный каталог debug-приложения.
+
+## BiSeNet ResNet-34 / yakhyo face-parsing (parity-ядро E1)
+
+Файл reference-набора:
+<https://huggingface.co/facefusion/models-3.0.0/blob/728b9659bd9691bf32cbf7f61af478d94b7ba81e/bisenet_resnet_34.onnx>.
+Upstream: <https://github.com/yakhyo/face-parsing>.
+
+FaceFusion 3.7.1 дословно маркирует модель:
+
+```text
+vendor: yakhyo
+license: MIT
+year: 2024
+```
+
+Upstream-репозиторий также содержит MIT license. Несмотря на разрешительный статус,
+единая политика проекта пока не включает этот вес в Git/APK: parity использует
+developer staging в приватное хранилище.
+
 ## Операционное решение проекта
 
 - В репозитории действует исключение `*.onnx`.
 - APK содержит ONNX Runtime, но не содержит `yoloface_8n`,
-  `arcface_w600k_r50`, `hyperswap_1a_256` или `inswapper_128_fp16`.
+  `arcface_w600k_r50`, `hyperswap_1a_256`, `inswapper_128_fp16`, `gfpgan_1.4` или
+  `bisenet_resnet_34`.
 - Приложение не имеет `INTERNET` и не скачивает веса.
-- Для каждого веса разрешён только явный picker-import; приложение принимает лишь
-  размер и SHA-256 из `docs/MODEL_CARD.md`.
+- Product flow разрешает только явный picker-import. До его подключения parity-ядро
+  E1 принимает GFPGAN/BiSeNet только через developer staging в приватный каталог и
+  само проверяет размер и полный SHA-256 из `docs/MODEL_CARD.md`.
 - До получения однозначных условий ни один вес нельзя публиковать вместе с исходниками,
   APK или иным дистрибутивом FaceSwapLocal.
 

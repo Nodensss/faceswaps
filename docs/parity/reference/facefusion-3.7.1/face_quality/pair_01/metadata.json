@@ -1,0 +1,93 @@
+{
+  "bisenet": {
+    "argmax_sha256": "a087bcca8f74103c253fb495c9242460a6a6caad88d75ce4cab8921b25c3936b",
+    "argmax_shape": [
+      512,
+      512
+    ],
+    "inference_ms": 1416.5986000007251,
+    "input_sha256_f32le": "9385bcae886b03cd59dbde9ae0215c5e49444220074c9f961f222ac8052f85c9",
+    "model": {
+      "file": "bisenet_resnet_34.onnx",
+      "sha256": "4a0b8c958a3c938913bd06a8365dbb3c8761afba6ecbf0d14b3b1f77eb230c96",
+      "size": 93632546
+    },
+    "region_mask_sha256_f32le": "322be4ba5c2cfff783988e5408ef5720f93c1bf128d73e7afb5f88909cff419f",
+    "region_names": [
+      "skin",
+      "left-eyebrow",
+      "right-eyebrow",
+      "left-eye",
+      "right-eye",
+      "glasses",
+      "nose",
+      "mouth",
+      "upper-lip",
+      "lower-lip"
+    ]
+  },
+  "canonical_input": {
+    "decoded_bgr_sha256": "42239023bbb07502fd60efb589a5186c94b5207401be2b488976076b3ee84eea",
+    "file": "inputs/pair_01_face_quality_input_512.png",
+    "provenance": {
+      "affine_matrix": [
+        [
+          0.5064969784282285,
+          0.00663733526187763,
+          -64.4590473770804
+        ],
+        [
+          -0.00663733526187763,
+          0.5064969784282285,
+          -24.847903691598972
+        ]
+      ],
+      "size": [
+        512,
+        512
+      ],
+      "source_frame": "reference/facefusion-3.7.1/pair_01/inswapper_final_box_03.png",
+      "source_frame_sha256": "eeada935b979fd02c34504a777681d618fd062ec3949117fa336c25d2b026afe",
+      "source_landmarks": "reference/facefusion-3.7.1/pair_01/metadata.json#target.landmarks_5_xy",
+      "template": "ffhq_512"
+    },
+    "sha256": "5987781f96010ceddbf7445b26bb5420b56e20138d9603a352a48a57f0fb2ec8",
+    "size_bytes": 350560
+  },
+  "facefusion": {
+    "commit": "3f81a8a78454089d720b8f318a12ae1702c4633b",
+    "instrumented_functions": [
+      "face_helper.warp_face_by_face_landmark_5",
+      "face_enhancer.prepare_crop_frame",
+      "face_enhancer.forward",
+      "face_masker.create_region_mask"
+    ],
+    "version": "3.7.1"
+  },
+  "gfpgan": {
+    "inference_ms": 12828.189299994847,
+    "input_sha256_f32le": "8e41a8d62bc65d43bcc96e80fa029e056a2e32f22980e5f014960950628ff606",
+    "max": 0.937753438949585,
+    "mean": 0.04197603464126587,
+    "min": -1.012166142463684,
+    "model": {
+      "file": "gfpgan_1.4.onnx",
+      "sha256": "accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385",
+      "size": 340299087
+    },
+    "range": "raw RGB CHW, nominal [-1,1]",
+    "sha256_f32le": "90bb757e7e40533c5f46dd63b9e255a6d7452a9a7eaa34a905e888a247c86da4",
+    "shape": [
+      3,
+      512,
+      512
+    ]
+  },
+  "runtime": {
+    "numpy": "2.2.1",
+    "onnxruntime": "1.26.0",
+    "opencv": "4.13.0",
+    "provider": "CPUExecutionProvider",
+    "python": "3.12.10"
+  }
+}

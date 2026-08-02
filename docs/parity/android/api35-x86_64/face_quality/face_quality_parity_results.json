@@ -1,0 +1,11 @@
+{
+  "canonical_input_sha256": "5987781f96010ceddbf7445b26bb5420b56e20138d9603a352a48a57f0fb2ec8",
+  "backend": "CPU",
+  "gfpgan_raw_ssim": 0.9999999999997585,
+  "gfpgan_raw_mae": 1.0947659726904628E-7,
+  "gfpgan_raw_max_abs_error": 1.6689300537109375E-6,
+  "gfpgan_ms": 47288,
+  "bisenet_class_agreement": 1,
+  "bisenet_protected_region_iou": 1,
+  "bisenet_ms": 6838
+}

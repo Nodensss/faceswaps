@@ -54,7 +54,7 @@ data class AffineMatrix(
     }
 }
 
-/** FaceFusion 3.7.1 five-point warp templates used by the Stage B models. */
+/** FaceFusion 3.7.1 five-point warp templates used by Stage B and E1 models. */
 enum class WarpTemplate(internal val normalizedPoints: List<Point2>) {
     ARCFACE_112_V2(
         listOf(
@@ -72,6 +72,15 @@ enum class WarpTemplate(internal val normalizedPoints: List<Point2>) {
             Point2(0.50019687, 0.56044219),
             Point2(0.38710391, 0.72160547),
             Point2(0.61507734, 0.72034453),
+        ),
+    ),
+    FFHQ_512(
+        listOf(
+            Point2(0.37691676, 0.46864664),
+            Point2(0.62285697, 0.46912813),
+            Point2(0.50123859, 0.61331904),
+            Point2(0.39308822, 0.72541100),
+            Point2(0.61150205, 0.72490465),
         ),
     ),
 }

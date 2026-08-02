@@ -227,3 +227,20 @@ Desktop FaceFusion production `swap_face` CPU timing: `4 780,079`, `5 689,506` �
 matching, тогда как Android применяет masked RGB mean/std с strength `0.65` по
 FR-PHOTO-06. Измеренный эффект включён в SSIM/MAE; вне inverse paste ROI изменено
 0 пикселей во всех трёх парах.
+
+## Изолированное parity-ядро E1
+
+Дата: 01.08.2026. AVD API 35 x86_64, ONNX Runtime Android 1.26.0,
+`CPUExecutionProvider`, один intra-op поток, `airplane_mode_on=1`. Вход — один и тот
+же закоммиченный desktop FaceFusion crop 512×512; detector, swapper, coordinator,
+compositor и UI не запускались.
+
+| Операция | Время Android, ms | Desktop CPU, ms | Численная проверка |
+| --- | ---: | ---: | --- |
+| GFPGAN 1.4 raw inference | 47 288 | 12 828 | SSIM `0.9999999999997585`, MAE `1.0948e-7` |
+| BiSeNet ResNet-34 main output + argmax | 6 838 | 1 417 | class agreement `1.0`, protected-region IoU `1.0` |
+
+Android-время включает только вызов соответствующего метода core, в том числе полную
+SHA-256-проверку приватного model file и создание/закрытие CPU session; desktop-время
+в metadata отражает только inference. Поэтому значения не являются прямым сравнением
+скорости. Peak heap и thermal не измерялись; AVD не считается reference device.

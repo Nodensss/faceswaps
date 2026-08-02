@@ -551,7 +551,7 @@ internal fun faceBoxIntersectionOverUnion(first: FaceBox, second: FaceBox): Doub
 }
 
 /** Pixel transforms kept independent from Canvas/GPU to make parity deterministic. */
-private object BitmapSampling {
+internal object BitmapSampling {
     fun detectorInput(bitmap: Bitmap, detectorSize: Int): FloatArray {
         val source = PixelSource(bitmap)
         val scale = min(

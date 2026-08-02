@@ -248,3 +248,163 @@ adb shell am instrument -w -r `
 - `reference/facefusion-3.7.1/pair_*/box_mask_03.png`;
 - `android/api35-x86_64/stage_c_results.json` и `pair_*_inswapper_final.png`;
 - `android/api35-x86_64/pair_*_box_mask_03.png`.
+
+## Parity-ядро E1: GFPGAN 1.4 и BiSeNet на каноническом 512-кропе
+
+### Граница проверки
+
+Этот срез намеренно не запускает detector, alignment на Android, swapper,
+композитинг, photo coordinator или UI. Он доказывает только две независимые операции
+на одном byte-identical входе:
+
+1. raw inference `gfpgan_1.4`;
+2. основной output `bisenet_resnet_34` и `argmax` его 19 классов.
+
+Геометрия уже проверена этапами B/C. Интеграция восстановления и parser-маски в
+полный фото-пайплайн выполняется отдельным шагом после этого численного барьера.
+
+### Происхождение канонического входа
+
+Файл `inputs/pair_01_face_quality_input_512.png` получен **только десктопным
+FaceFusion**, не Android-кодом:
+
+1. `run_facefusion_reference.py` на FaceFusion 3.7.1 production-функцией
+   `face_swapper.swap_face` создал уже закоммиченный Stage C кадр
+   `reference/facefusion-3.7.1/pair_01/inswapper_final_box_03.png`;
+2. его SHA-256 перед extraction проверяется как
+   `eeada935b979fd02c34504a777681d618fd062ec3949117fa336c25d2b026afe`;
+3. pinned desktop-функция
+   `warp_face_by_face_landmark_5(frame, target_landmarks, "ffhq_512", (512,512))`
+   использует target landmarks из `pair_01/metadata.json`;
+4. PNG записывается, проверяется и **заново декодируется с диска** до inference.
+   Android test читает те же закоммиченные PNG-байты.
+
+Канонический PNG: 350 560 байт, SHA-256
+`5987781f96010ceddbf7445b26bb5420b56e20138d9603a352a48a57f0fb2ec8`.
+SHA-256 декодированных desktop BGR-пикселей:
+`42239023bbb07502fd60efb589a5186c94b5207401be2b488976076b3ee84eea`.
+Матрица desktop FaceFusion:
+
+```text
+[[ 0.5064969784282285,  0.00663733526187763, -64.4590473770804  ],
+ [-0.00663733526187763, 0.5064969784282285,  -24.847903691598972]]
+```
+
+Таким образом, сам E1 parity-прогон swapper не вызывает: его вход — уже готовый,
+зафиксированный desktop-кроп.
+
+### Desktop reference
+
+Используется тот же checkout FaceFusion 3.7.1 / commit
+`3f81a8a78454089d720b8f318a12ae1702c4633b`, Python 3.12.10, ONNX Runtime 1.26.0,
+OpenCV 4.13.0, NumPy 2.2.1 и `CPUExecutionProvider`. Скрипт вызывает production
+`face_enhancer.prepare_crop_frame`, `face_enhancer.forward` и
+`face_masker.create_region_mask`; сессии GFPGAN/BiSeNet открываются последовательно.
+
+| Модель | Размер, байт | SHA-256 |
+| --- | ---: | --- |
+| `gfpgan_1.4.onnx` | 340 299 087 | `accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385` |
+| `bisenet_resnet_34.onnx` | 93 632 546 | `4a0b8c958a3c938913bd06a8365dbb3c8761afba6ecbf0d14b3b1f77eb230c96` |
+
+```powershell
+$FaceFusionRoot = 'C:\Temp\facefusion-3.7.1'
+$ModelDir = 'C:\Users\ozr\AppData\Local\FaceSwapLocal\models'
+$ParityVenv = 'C:\Users\ozr\AppData\Local\FaceSwapLocal\facefusion-3.7.1-venv'
+
+& "$ParityVenv\Scripts\python.exe" .\docs\parity\make_face_quality_reference.py `
+  --facefusion-root $FaceFusionRoot `
+  --model-dir $ModelDir `
+  --parity-root .\docs\parity `
+  --regenerate-canonical-input
+```
+
+Последний desktop-прогон дал:
+
+- GFPGAN input tensor SHA-256:
+  `8e41a8d62bc65d43bcc96e80fa029e056a2e32f22980e5f014960950628ff606`;
+- GFPGAN raw output SHA-256:
+  `90bb757e7e40533c5f46dd63b9e255a6d7452a9a7eaa34a905e888a247c86da4`;
+- BiSeNet input tensor SHA-256:
+  `9385bcae886b03cd59dbde9ae0215c5e49444220074c9f961f222ac8052f85c9`;
+- BiSeNet argmax SHA-256:
+  `a087bcca8f74103c253fb495c9242460a6a6caad88d75ce4cab8921b25c3936b`;
+- CPU inference: GFPGAN 12 828 мс, BiSeNet 1 417 мс.
+
+Полные данные находятся в
+`reference/facefusion-3.7.1/face_quality/pair_01/metadata.json`.
+
+### Android API 35 parity
+
+Веса не входят в APK/androidTest assets. Для developer parity они помещаются через
+`adb` в `files/models` debug-приложения, после чего isolated core перед **каждой**
+сессией проверяет каноническое имя, размер и полный SHA-256. Product picker и UI на
+этом шаге не изменяются.
+
+```powershell
+.\gradlew.bat assembleDebug assembleDebugAndroidTest --no-daemon --console=plain
+adb install -r .\app\build\outputs\apk\debug\app-debug.apk
+adb install -r .\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
+
+adb push "$ModelDir\gfpgan_1.4.onnx" /data/local/tmp/gfpgan_1.4.onnx
+adb push "$ModelDir\bisenet_resnet_34.onnx" /data/local/tmp/bisenet_resnet_34.onnx
+adb shell run-as com.faceswaplocal.app mkdir -p files/models
+adb shell run-as com.faceswaplocal.app cp /data/local/tmp/gfpgan_1.4.onnx files/models/gfpgan_1.4.onnx
+adb shell run-as com.faceswaplocal.app cp /data/local/tmp/bisenet_resnet_34.onnx files/models/bisenet_resnet_34.onnx
+adb shell rm /data/local/tmp/gfpgan_1.4.onnx /data/local/tmp/bisenet_resnet_34.onnx
+
+adb shell am instrument -w -r `
+  -e class com.faceswaplocal.app.inference.FaceQualityParityInstrumentedTest `
+  com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Обязательные gates: GFPGAN raw SSIM ≥ 0,95 без clamp raw tails; BiSeNet class
+agreement ≥ 0,95; IoU protected-region set ≥ 0,95. Android metrics и PNG после
+успешного прогона сохраняются в `android/api35-x86_64/face_quality/`.
+
+Фактический прогон: AVD API 35 x86_64, ONNX Runtime Android 1.26.0,
+`airplane_mode_on=1`, CPU с одним intra-op потоком; `OK (1 test)`, 57,476 с.
+
+| Метрика | Результат | Gate |
+| --- | ---: | ---: |
+| GFPGAN raw SSIM | `0.9999999999997585` | ≥ `0.95` |
+| GFPGAN raw MAE | `1.0947659726904628e-7` | диагностическая |
+| GFPGAN raw max abs error | `1.6689300537109375e-6` | диагностическая |
+| BiSeNet class agreement | `1.0` | ≥ `0.95` |
+| BiSeNet protected-region IoU | `1.0` | ≥ `0.95` |
+| GFPGAN Android inference | `47 288 ms` | диагностическая |
+| BiSeNet Android inference | `6 838 ms` | диагностическая |
+
+Все три обязательных gate пройдены. Android и desktop GFPGAN PNG визуально
+неразличимы; Android BiSeNet PNG показывает raw binary protected-region set, тогда как
+desktop PNG дополнительно показывает production Gaussian blur из
+`create_region_mask`. Численно обе стороны сравниваются до blur по `argmax` и дают
+полное совпадение.
+
+### Android `ffhq_512` geometry spot-check
+
+После raw parity отдельно проверена Android-геометрия без любого ONNX inference.
+`FaceQualityGeometryInstrumentedTest` читает тот же desktop Stage C frame и те же пять
+target landmarks, строит `FaceGeometry.estimateSimilarity(..., WarpTemplate.FFHQ_512,
+512, 512)`, затем вызывает production sampler приложения
+`BitmapSampling.warpAffine` (bilinear inverse sampling с edge replication).
+
+```powershell
+adb shell am instrument -w -r `
+  -e class com.faceswaplocal.app.inference.FaceQualityGeometryInstrumentedTest `
+  com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Фактический прогон на том же AVD API 35 x86_64: `OK (1 test)`, 4,032 с.
+
+| Метрика | Результат | Порог |
+| --- | ---: | ---: |
+| Максимальное расхождение проекций 5 landmarks | `0.0000027163 px` | ≤ `2 px` |
+| Максимальная абсолютная ошибка affine coefficient | `0.0000070771` | диагностическая |
+| SSIM Android crop ↔ canonical desktop crop | `0.9972936339` | ≥ `0.95` |
+| RGB MAE | `0.448729 / 255` | диагностическая |
+
+Порог §11.4 пройден без изменения шаблона, сэмплера или допуска. Непобитовое различие
+ожидаемо: desktop использует OpenCV `INTER_AREA`, Android — собственный bilinear
+sampler. Визуально кропы неразличимы. Полные matrices и hashes сохранены в
+`android/api35-x86_64/face_quality/face_quality_geometry_results.json`, Android PNG —
+в `android/api35-x86_64/face_quality/android_ffhq_512_crop.png`.

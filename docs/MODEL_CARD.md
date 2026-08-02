@@ -1,11 +1,16 @@
-# Карточка моделей FaceSwapLocal — этап B
+# Карточка моделей FaceSwapLocal — этап B и parity-ядро E1
 
-Дата проверки источников и условий: 19.07.2026.
+Дата проверки источников и условий: этап B — 19.07.2026; GFPGAN/BiSeNet —
+01.08.2026.
 
-Этот документ описывает ровно те файлы ONNX, с которыми выполнен этап B. Веса не
+Этот документ описывает файлы ONNX этапа B и изолированного parity-ядра E1. Веса не
 входят в репозиторий или APK. Приложение не скачивает их: пользователь выбирает каждый
 файл системным picker, после чего приложение проверяет точный размер и полный SHA-256
 до помещения файла в приватное хранилище и повторяет проверку перед созданием сессии.
+Для двух моделей parity-ядра E1 продуктовый picker ещё не подключён: во время
+инструментального теста разработчик помещает их через `adb` в приватный каталог
+debug-приложения, а parity-core перед каждой сессией полностью проверяет размер и
+SHA-256. Это тестовая процедура, не пользовательский сценарий.
 
 ## 1. Сводка и политика распространения
 
@@ -15,6 +20,8 @@
 | Identity encoder | `arcface_w600k_r50.onnx` | InsightFace | 174 388 474 | `f1f79dc3b0b79a69f94799af1fffebff09fbd78fd96a275fd8f0cbbea23270d1` |
 | Основной кандидат swapper | `hyperswap_1a_256.onnx` | FaceFusion | 402 742 682 | `c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add` |
 | Fallback swapper | `inswapper_128_fp16.onnx` | InsightFace | 277 680 829 | `c4eccca86ad177586c85c28bf1a64a9d9ed237e283a15818d831f7facfd3f420` |
+| Восстановление лица (E1 parity) | `gfpgan_1.4.onnx` | TencentARC | 340 299 087 | `accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385` |
+| Face parser (E1 parity) | `bisenet_resnet_34.onnx` | yakhyo | 93 632 546 | `4a0b8c958a3c938913bd06a8365dbb3c8761afba6ecbf0d14b3b1f77eb230c96` |
 
 SHA-256 взят из Xet/LFS metadata официальных страниц файлов Hugging Face на
 зафиксированных ревизиях и повторно проверен локально после скачивания. Сопутствующие
@@ -303,3 +310,78 @@ ONNX Runtime Android 1.26.0, CPU EP. Использованы три полно�
 - GFPGAN 1.4;
 - проверка качества на личных фото — личные изображения не использовались и не
   коммитились.
+
+## 8. Изолированное parity-ядро E1
+
+Граница этой проверки — два независимых raw inference на одном закоммиченном
+каноническом кропе 512×512. Swapper, детектор, новая геометрия, координатор фото,
+композитинг и UI не запускаются. Происхождение входа, команды и численные результаты
+фиксируются в `docs/parity/README.md`.
+
+### 8.1 `gfpgan_1.4`
+
+#### Идентификация, источник и лицензия
+
+- Название/версия: `gfpgan_1.4.onnx`, GFPGAN v1.4 clean model без colorization.
+- Автор/организация: TencentARC.
+- Файл reference-набора:
+  <https://huggingface.co/facefusion/models-3.0.0/blob/728b9659bd9691bf32cbf7f61af478d94b7ba81e/gfpgan_1.4.onnx>.
+- Upstream и полный лицензионный файл:
+  <https://github.com/TencentARC/GFPGAN/blob/master/LICENSE>.
+- Размер: 340 299 087 байт.
+- SHA-256: `accc4757b26bdb89b32b4d3500d4f79c9dff97c1dd7c7104bf9dcb95e3311385`.
+- FaceFusion 3.7.1 маркирует модель как `Apache-2.0`, vendor `TencentARC`, year `2022`.
+  Полный upstream LICENSE уточняет, что это составной набор: сам GFPGAN — Apache-2.0,
+  StyleGAN2-компоненты включают NVIDIA Source Code License-NC, DFDNet-компоненты —
+  CC-BY-NC-SA-4.0. Поэтому проект ограничивает использование личным некоммерческим и
+  не распространяет вес в Git/APK.
+
+#### Tensor contract и обработка
+
+- Вход `input`: float32 `[1,3,512,512]`; выход `output`: float32
+  `[1,3,512,512]`; входа `weight` у этого ONNX нет.
+- Каналы RGB, layout NCHW; preprocessing FaceFusion:
+  `x/255`, затем `(x-0.5)/0.5`.
+- Raw output хранится без clamp. Для визуализации применяется FaceFusion-порядок:
+  clamp `[-1,1]`, `(x+1)/2`, HWC, round `*255`, RGB→BGR.
+- Alignment production-модели — `ffhq_512`, но в parity-ядре геометрия не
+  пересчитывается на Android: обе стороны читают один канонический PNG.
+- Результат parity: см. `docs/parity/README.md`; интеграция управляемой силы
+  восстановления и сохранения идентичности относится к последующему шагу E1.
+
+### 8.2 `bisenet_resnet_34`
+
+#### Идентификация, источник и лицензия
+
+- Название/версия: `bisenet_resnet_34.onnx`, BiSeNet ResNet-34 face parser.
+- Автор/организация: yakhyo (Valikhujaev Yakhyokhuja); архитектура BiSeNet.
+- Файл reference-набора:
+  <https://huggingface.co/facefusion/models-3.0.0/blob/728b9659bd9691bf32cbf7f61af478d94b7ba81e/bisenet_resnet_34.onnx>.
+- Upstream: <https://github.com/yakhyo/face-parsing>.
+- Лицензия upstream и ярлык FaceFusion 3.7.1: `MIT`.
+- Размер: 93 632 546 байт.
+- SHA-256: `4a0b8c958a3c938913bd06a8365dbb3c8761afba6ecbf0d14b3b1f77eb230c96`.
+- MIT допускает распространение при сохранении notice; текущая политика проекта всё
+  равно не включает вес в Git/APK и использует локальное developer staging.
+
+#### Tensor contract и обработка
+
+- Вход `input`: float32 `[batch,3,512,512]`.
+- Выходы: основной `output` и auxiliary `0`/`1`; parity-core запрашивает только
+  основной runtime tensor `[1,19,512,512]`, чтобы не выделять память под auxiliary.
+- Preprocessing FaceFusion: RGB, `x/255`, ImageNet mean
+  `[0.485,0.456,0.406]`, std `[0.229,0.224,0.225]`, NCHW.
+- Проверяемый raw postprocess: `argmax` по 19 классам. Protected region set:
+  `1,2,3,4,5,6,10,11,12,13` (кожа, брови, глаза, очки, нос, рот и губы).
+- Desktop reference дополнительно сохраняет production `create_region_mask` после
+  Gaussian blur/threshold transform. Его Android-интеграция с маской и блендингом в
+  этот parity-срез не входит.
+
+### 8.3 Управление памятью и проверка файлов
+
+- Обе сессии CPU открываются строго последовательно и закрываются после своего raw
+  inference; swapper одновременно с ними не существует.
+- BiSeNet argmax вычисляется прямо из output buffer; полный logits tensor не копируется.
+- Перед каждой developer parity-сессией файл из приватного каталога приложения
+  проверяется по каноническому имени, размеру и полному SHA-256.
+- Веса отсутствуют в APK, Git и androidTest assets; сеть приложению не требуется.
