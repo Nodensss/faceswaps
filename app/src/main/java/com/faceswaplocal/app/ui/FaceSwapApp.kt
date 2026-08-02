@@ -34,10 +34,13 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -109,7 +112,11 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         onSetUnchanged = viewModel::setUnchanged,
         onApplySourceToAll = viewModel::applySourceToAll,
         onRemoveSource = viewModel::removeSource,
+        onRestorationEnabledChange = viewModel::setRestorationEnabled,
+        onRestorationStrengthChange = viewModel::setRestorationStrength,
+        onParserSwapMaskEnabledChange = viewModel::setParserSwapMaskEnabled,
         onRunPhotoSwap = viewModel::runPhotoSwap,
+        onPhotoResultDisposed = viewModel::onPhotoResultDisposed,
         onDismissError = viewModel::dismissError,
     )
 }
@@ -126,7 +133,11 @@ internal fun FaceSwapScreen(
     onSetUnchanged: (FaceId) -> Unit,
     onApplySourceToAll: (FaceId) -> Unit,
     onRemoveSource: (FaceId) -> Unit,
+    onRestorationEnabledChange: (Boolean) -> Unit,
+    onRestorationStrengthChange: (Float) -> Unit,
+    onParserSwapMaskEnabledChange: (Boolean) -> Unit,
     onRunPhotoSwap: () -> Unit,
+    onPhotoResultDisposed: (MultiPhotoFaceSwapResult) -> Unit,
     onDismissError: () -> Unit,
 ) {
     Scaffold(
@@ -219,7 +230,11 @@ internal fun FaceSwapScreen(
 
                 PhotoSwapCard(
                     state = state,
+                    onRestorationEnabledChange = onRestorationEnabledChange,
+                    onRestorationStrengthChange = onRestorationStrengthChange,
+                    onParserSwapMaskEnabledChange = onParserSwapMaskEnabledChange,
                     onRunPhotoSwap = onRunPhotoSwap,
+                    onPhotoResultDisposed = onPhotoResultDisposed,
                 )
             }
 
@@ -279,7 +294,7 @@ private fun ModelSetupCard(
             }
 
             Text(
-                text = "Рабочий swapper: InSwapper fp16 · 128×128. BiSeNet защищает границы лица при свапе и восстановлении; GFPGAN используется проходом восстановления. Настройка силы появится в следующем UI-срезе E2.",
+                text = "Рабочий swapper: InSwapper fp16 · 128×128. BiSeNet защищает границы лица, а GFPGAN восстанавливает детали с выбранной ниже силой.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -563,7 +578,7 @@ private fun AssignmentCard(
                 shape = RoundedCornerShape(12.dp),
             ) {
                 Text(
-                    text = "Этап C связывает выбранную рамку с независимым 5-точечным YOLOFace. Рамки ML Kit остаются только быстрым UI-превью.",
+                    text = "Нейропайплайн связывает выбранную рамку с независимым 5-точечным YOLOFace. Рамки ML Kit остаются только быстрым UI-превью.",
                     modifier = Modifier.padding(12.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -590,8 +605,14 @@ private fun AssignmentCard(
 @Composable
 private fun PhotoSwapCard(
     state: FaceSwapUiState,
+    onRestorationEnabledChange: (Boolean) -> Unit,
+    onRestorationStrengthChange: (Float) -> Unit,
+    onParserSwapMaskEnabledChange: (Boolean) -> Unit,
     onRunPhotoSwap: () -> Unit,
+    onPhotoResultDisposed: (MultiPhotoFaceSwapResult) -> Unit,
 ) {
+    val controlsEnabled = state.photoSwapPhase != PhotoSwapPhase.RUNNING
+    val settings = state.qualitySettings
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -601,14 +622,70 @@ private fun PhotoSwapCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "4. Заменить лицо",
+                text = "4. Обработать фото",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "InSwapper создаёт новое лицо, после чего приложение выполняет inverse transform, цветосогласование, аффинную маску с растушёвкой и мягкий блендинг с целевой фотографией.",
+                text = "InSwapper создаёт новое лицо, BiSeNet при необходимости защищает границы волос и шеи, а отдельный второй проход GFPGAN восстанавливает детали.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Восстановление деталей", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "GFPGAN обрабатывает только назначенные лица",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.restorationEnabled,
+                    onCheckedChange = onRestorationEnabledChange,
+                    enabled = controlsEnabled,
+                    modifier = Modifier.testTag("restoration-enabled"),
+                )
+            }
+            Text(
+                text = "Сила восстановления: ${(settings.restorationStrength * 100).toInt()}%",
+                modifier = Modifier.testTag("restoration-strength-label"),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Slider(
+                value = settings.restorationStrength,
+                onValueChange = onRestorationStrengthChange,
+                valueRange = 0f..1f,
+                steps = 9,
+                enabled = controlsEnabled && settings.restorationEnabled,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("restoration-strength"),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("BiSeNet-маска при свапе", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Выключение возвращает аффинную box-mask; при GFPGAN BiSeNet всё равно защищает проход восстановления",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.parserSwapMaskEnabled,
+                    onCheckedChange = onParserSwapMaskEnabledChange,
+                    enabled = controlsEnabled,
+                    modifier = Modifier.testTag("parser-swap-mask-enabled"),
+                )
+            }
 
             Button(
                 onClick = onRunPhotoSwap,
@@ -618,15 +695,15 @@ private fun PhotoSwapCard(
                 Text(
                     when (state.photoSwapPhase) {
                         PhotoSwapPhase.RUNNING -> "Локальная замена выполняется…"
-                        PhotoSwapPhase.READY -> "Повторить замену лица"
-                        else -> "Заменить лицо на фото"
+                        PhotoSwapPhase.READY -> "Повторить обработку"
+                        else -> "Обработать фото"
                     },
                 )
             }
 
             if (!state.canRunPhotoSwap && state.photoSwapPhase != PhotoSwapPhase.RUNNING) {
                 Text(
-                    text = "Этап C обрабатывает ровно одно лицо на каждом фото. Нужны назначение и проверенные YOLOFace, ArcFace и InSwapper fp16.",
+                    text = "Для запуска нужны назначения и проверенные YOLOFace, ArcFace и InSwapper. BiSeNet и GFPGAN требуются только выбранным режимам качества.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -638,7 +715,7 @@ private fun PhotoSwapCard(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-                    Text("Проверяю SHA-256, запускаю CPU fallback и вставляю результат вне Main thread.")
+                    Text("Локально выполняю свапы, затем восстановление деталей; предыдущий результат остаётся доступен до готовности нового.")
                 }
             }
 
@@ -653,27 +730,62 @@ private fun PhotoSwapCard(
             }
 
             state.photoSwapResult?.let { result ->
-                PhotoSwapResultView(result)
+                val original = state.targetBitmap
+                if (original != null) {
+                    PhotoSwapResultView(
+                        original = original,
+                        result = result,
+                        onResultDisposed = onPhotoResultDisposed,
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun PhotoSwapResultView(result: MultiPhotoFaceSwapResult) {
-    val image = remember(result.finalBitmap) { result.finalBitmap.asImageBitmap() }
+private fun PhotoSwapResultView(
+    original: Bitmap,
+    result: MultiPhotoFaceSwapResult,
+    onResultDisposed: (MultiPhotoFaceSwapResult) -> Unit,
+) {
+    var showOriginal by remember(result.finalBitmap) { mutableStateOf(false) }
+    val originalImage = remember(original) { original.asImageBitmap() }
+    val resultImage = remember(result.finalBitmap) { result.finalBitmap.asImageBitmap() }
+    DisposableEffect(result.finalBitmap) {
+        onDispose { onResultDisposed(result) }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = showOriginal,
+                onClick = { showOriginal = true },
+                label = { Text("До") },
+                modifier = Modifier.testTag("compare-show-before"),
+            )
+            FilterChip(
+                selected = !showOriginal,
+                onClick = { showOriginal = false },
+                label = { Text("После") },
+                modifier = Modifier.testTag("compare-show-after"),
+            )
+        }
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = Color.Black,
             shape = RoundedCornerShape(14.dp),
         ) {
             Image(
-                bitmap = image,
-                contentDescription = "Целевая фотография с заменённым лицом",
+                bitmap = if (showOriginal) originalImage else resultImage,
+                contentDescription = if (showOriginal) {
+                    "Оригинал до обработки"
+                } else {
+                    "Результат после обработки"
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(420.dp),
+                    .height(420.dp)
+                    .testTag(if (showOriginal) "comparison-before" else "comparison-after"),
                 contentScale = ContentScale.Fit,
             )
         }
@@ -682,9 +794,14 @@ private fun PhotoSwapResultView(result: MultiPhotoFaceSwapResult) {
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = "Результат находится только в памяти и ещё не сохранён. Экспорт будет добавлен на этапе E.",
+            text = "Результат находится только в памяти и ещё не сохранён. Экспорт пока не подключён.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "Применено: восстановление ${if (result.restorationStrength > 0f) "${(result.restorationStrength * 100).toInt()}%" else "выключено"} · BiSeNet-маска свапа ${if (result.swapParserBackends.isNotEmpty()) "включена" else "выключена"}",
+            modifier = Modifier.testTag("applied-quality-settings"),
+            style = MaterialTheme.typography.bodySmall,
         )
         Text(
             text = "Backend: detector=${result.detectorBackend}, ArcFace=${result.recognizerBackend}, swapper=${result.swapperBackend}",

@@ -1,6 +1,7 @@
-# Parity-тест этапов B–C: FaceFusion 3.7.1 и Android
+# Parity-тест этапов B–E1: FaceFusion 3.7.1 и Android
 
-Дата фиксации результатов: этап B — 2026-07-19, этап C — 2026-07-21.
+Дата фиксации результатов: этап B — 2026-07-19, этап C — 2026-07-21,
+этап E1 — 2026-08-02.
 
 ## Область проверки
 
@@ -582,3 +583,68 @@ parser-region.
   `pair_03_box_vs_parser.png` — сравнения до/после;
 - `STAGE_C_VISUAL_CHECKLIST.md` — обновлённый визуальный чек-лист рядом с замечаниями
   этапа C.
+
+## E1, контрольная точка 3: настройки качества и диагностика цвета
+
+Дата проверки: 02.08.2026. Пользовательские настройки теперь управляют тем же
+production coordinator, который проверен в контрольных точках 1–2:
+
+- GFPGAN можно выключить или задать силу смешивания от `0` до `1`; безопасный default
+  — `0.8`;
+- parser-маску свапа можно выключить, вернув аффинную box-mask; BiSeNet в проходе
+  восстановления остаётся обязательной защитой области лица;
+- настройки сохраняются через `SavedStateHandle`, блокируются во время inference и
+  передаются в immutable snapshot задачи;
+- результат сравнивается с исходной целью переключателем «До/После» в одном viewport;
+  предыдущий bitmap остаётся доступным до атомарной публикации повторного результата.
+
+Compose instrumentation на API 35 в авиарежиме завершился `OK (3 tests)`: проверены
+мутации и сохранение UI-state, recreate, блокировка во время обработки, оба состояния
+общего viewport и освобождение заменённого result bitmap. Этот debug harness не
+запускает coordinator; преобразование настроек в effective strength, набор моделей и
+`SwapBlendMaskMode` покрыто `FaceQualitySettingsTest`, а production-вызов находится в
+`FaceSwapViewModel.runPhotoSwap`. Скриншоты синтетического debug harness находятся в
+`docs/reports/img/STAGE_E1_SETTINGS_API35.png`,
+`STAGE_E1_BEFORE_AFTER_API35.png` и `STAGE_E1_COMPARE_BEFORE_API35.png`.
+
+### Что измеряет color diagnostic
+
+Production `FaceCompositor.matchCropColors` получает frozen
+`FaceCompositor.createBoxMask`: BiSeNet parser-region ограничивает только итоговый
+paste alpha и **не** участвует в RGB mean/std. Тест воспроизвёл этот контракт без
+изменения production-кода: кроп 128×128, threshold `0.5`, 12 024 samples,
+weight sum `11 254.042074`, strength `0.65`, gain clamp `0.85…1.15`, offset clamp
+`−24…24`. SHA-256 little-endian float32 box-mask:
+`dfa428f5b233fef155e436cc752303263a8ec30b404129ce0729112836c872e2`.
+
+Взвешенная доля box-статистики, реально покрытая parser-mask, равна 53,952865% на
+`pair_02` и 53,880621% на `pair_03`. Значит, почти половина веса статистики приходится
+на волосы/фон вне parser-region и может смещать коррекцию.
+
+Фиксированные polygon ROI отмечают кожу лба и неизменяемую кожу шеи. Для каждой
+стадии вычислены медианы CIE Lab D65, CIEDE2000 `face↔neck`, векторный residual
+`(face − neck)` относительно исходного target и drift от GFPGAN. Neck ROI после
+обоих проходов побитово идентичен исходнику.
+
+| Пара | Target ΔE00 | Swap + color ΔE00 | GFPGAN 0.8 ΔE00 | Residual swap, ΔE76 | Residual GFPGAN, ΔE76 | GFPGAN drift, ΔE76 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pair_02` | 7,304500 | 8,681741 | 7,908405 | 3,949355 | 2,503508 | 1,553389 |
+| `pair_03` | 31,162696 | 28,345982 | 27,434374 | 3,992223 | 6,033606 | 2,309390 |
+
+На `pair_02` GFPGAN приблизил отношение face↔neck к исходному, на `pair_03` —
+отдалил. Поэтому измерение не подтверждает единую причину для обеих fixtures и не
+обосновывает правку «только яркость, сохранить цветность» сейчас. Коэффициенты не
+подгонялись: синтетическая плоская шея не представляет распределение реальных фото.
+Сравнение parser-scoped статистики и chroma-preserving restoration переносится на
+разрешённое реальное фото первого reference device.
+
+Артефакты:
+
+- `android/api35-x86_64/checkpoint_3/checkpoint_3_color_diagnostics.json` — полный
+  mask-contract, Lab/RGB statistics, adjustment, drift и timings;
+- `android/api35-x86_64/checkpoint_3/pair_02_post_swap_color.png` и
+  `pair_03_post_swap_color.png` — кадры сразу после swap + color correction;
+- `android/api35-x86_64/checkpoint_3/pair_02_post_gfpgan_0_8.png` и
+  `pair_03_post_gfpgan_0_8.png` — те же кадры после GFPGAN strength `0.8`;
+- `android/api35-x86_64/checkpoint_3/pair_02_tone_triptych.png` и
+  `pair_03_tone_triptych.png` — target / post-swap / post-GFPGAN с отмеченными ROI.

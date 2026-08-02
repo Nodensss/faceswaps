@@ -10,10 +10,15 @@ import com.faceswaplocal.app.domain.DetectedFace
 import com.faceswaplocal.app.domain.FaceAssignmentPlanner
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.NormalizedRect
+import com.faceswaplocal.app.inference.InferenceBackend
+import com.faceswaplocal.app.inference.MultiPhotoFaceSwapResult
+import com.faceswaplocal.app.inference.PhotoFaceSwapTimings
 import com.faceswaplocal.app.ui.theme.FaceSwapLocalTheme
 
 class StageDUiTestActivity : ComponentActivity() {
     val faceSwapViewModel: FaceSwapViewModel by viewModels()
+    lateinit var initialResultBitmap: Bitmap
+        private set
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -21,15 +26,19 @@ class StageDUiTestActivity : ComponentActivity() {
             val sources = (1..3).map { face("source-$it", it * 0.1f) }
             val targets = (1..4).map { face("target-$it", it * 0.08f) }
             val sourceBitmaps = sources.associate { it.id to bitmap(0xff445566.toInt()) }
+            val targetBitmap = bitmap(0xff223344.toInt())
+            initialResultBitmap = bitmap(0xff8899aa.toInt())
             faceSwapViewModel.injectUiStateForTest(
                 FaceSwapUiState(
                     sourceBitmap = sourceBitmaps.getValue(sources.first().id),
-                    targetBitmap = bitmap(0xff223344.toInt()),
+                    targetBitmap = targetBitmap,
                     sourceFaces = sources,
                     sourceBitmaps = sourceBitmaps,
                     targetFaces = targets,
                     assignments = FaceAssignmentPlanner.defaults(sources, targets),
                     phase = AnalysisPhase.MAPPING,
+                    photoSwapPhase = PhotoSwapPhase.READY,
+                    photoSwapResult = fakeResult(initialResultBitmap),
                 ),
             )
         }
@@ -46,7 +55,11 @@ class StageDUiTestActivity : ComponentActivity() {
                     onSetUnchanged = faceSwapViewModel::setUnchanged,
                     onApplySourceToAll = faceSwapViewModel::applySourceToAll,
                     onRemoveSource = faceSwapViewModel::removeSource,
+                    onRestorationEnabledChange = faceSwapViewModel::setRestorationEnabled,
+                    onRestorationStrengthChange = faceSwapViewModel::setRestorationStrength,
+                    onParserSwapMaskEnabledChange = faceSwapViewModel::setParserSwapMaskEnabled,
                     onRunPhotoSwap = {},
+                    onPhotoResultDisposed = faceSwapViewModel::onPhotoResultDisposed,
                     onDismissError = {},
                 )
             }
@@ -63,4 +76,28 @@ class StageDUiTestActivity : ComponentActivity() {
 
     private fun bitmap(color: Int) =
         Bitmap.createBitmap(IntArray(64 * 64) { color }, 64, 64, Bitmap.Config.ARGB_8888)
+
+    private fun fakeResult(bitmap: Bitmap) = MultiPhotoFaceSwapResult(
+        finalBitmap = bitmap,
+        swapRois = emptyList(),
+        enhanceRois = emptyList(),
+        detectorBackend = InferenceBackend.CPU,
+        recognizerBackend = InferenceBackend.CPU,
+        swapperBackend = InferenceBackend.CPU,
+        enhancerBackends = listOf(InferenceBackend.CPU),
+        swapParserBackends = listOf(InferenceBackend.CPU),
+        enhancementParserBackends = listOf(InferenceBackend.CPU),
+        protectedUnassignedRois = emptyList(),
+        restorationStrength = 0.8f,
+        swapParserMs = 12L,
+        enhancementMs = 34L,
+        timings = PhotoFaceSwapTimings(
+            detectorMs = 1L,
+            recognizerMs = 2L,
+            swapperMs = 3L,
+            parserMs = 4L,
+            compositingMs = 5L,
+            totalMs = 45L,
+        ),
+    )
 }

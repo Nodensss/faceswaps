@@ -13,6 +13,7 @@ import com.faceswaplocal.app.data.MlKitLocalFaceDetector
 import com.faceswaplocal.app.domain.DetectedFace
 import com.faceswaplocal.app.domain.FaceAssignmentPlanner
 import com.faceswaplocal.app.domain.AssignmentStateCodec
+import com.faceswaplocal.app.domain.FaceQualitySettings
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.SwapAssignment
 import com.faceswaplocal.app.inference.ModelCatalog
@@ -30,8 +31,10 @@ import com.faceswaplocal.app.inference.MultiPhotoAssignment
 import com.faceswaplocal.app.inference.MultiPhotoSource
 import com.faceswaplocal.app.inference.MultiPhotoTarget
 import com.faceswaplocal.app.inference.MultiPhotoFaceSwapResult
-import com.faceswaplocal.app.inference.PhotoFaceSwapRequest
 import com.faceswaplocal.app.inference.RequestedInferenceBackend
+import com.faceswaplocal.app.inference.SwapBlendMaskMode
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -58,6 +61,55 @@ enum class PhotoSwapPhase {
     ERROR,
 }
 
+internal object FaceQualitySettingsSavedState {
+    private const val RESTORATION_ENABLED = "photo_restoration_enabled"
+    private const val RESTORATION_STRENGTH = "photo_restoration_strength"
+    private const val PARSER_SWAP_MASK_ENABLED = "photo_parser_swap_mask_enabled"
+
+    fun read(handle: SavedStateHandle): FaceQualitySettings = FaceQualitySettings.fromPersisted(
+        restorationEnabled = handle[RESTORATION_ENABLED],
+        restorationStrength = handle[RESTORATION_STRENGTH],
+        parserSwapMaskEnabled = handle[PARSER_SWAP_MASK_ENABLED],
+    )
+
+    fun write(handle: SavedStateHandle, settings: FaceQualitySettings) {
+        handle[RESTORATION_ENABLED] = settings.restorationEnabled
+        handle[RESTORATION_STRENGTH] = settings.restorationStrength
+        handle[PARSER_SWAP_MASK_ENABLED] = settings.parserSwapMaskEnabled
+    }
+}
+
+internal fun FaceQualitySettings.requiredModelIds(): Set<ModelId> = buildSet {
+    add(ModelId.YOLOFACE_8N)
+    add(ModelId.ARCFACE_W600K_R50)
+    add(ModelId.INSWAPPER_128_FP16)
+    if (parserSwapMaskEnabled || effectiveRestorationStrength > 0f) {
+        add(ModelId.BISENET_RESNET_34)
+    }
+    if (effectiveRestorationStrength > 0f) {
+        add(ModelId.GFPGAN_1_4)
+    }
+}
+
+internal fun FaceQualitySettings.swapBlendMaskMode(): SwapBlendMaskMode =
+    if (parserSwapMaskEnabled) SwapBlendMaskMode.PARSER_REGION else SwapBlendMaskMode.AFFINE_BOX
+
+internal inline fun <T> publishOrReleaseOwnedResult(
+    result: T,
+    checkCanPublish: () -> Unit,
+    publish: (T) -> Unit,
+    release: (T) -> Unit,
+) {
+    var published = false
+    try {
+        checkCanPublish()
+        publish(result)
+        published = true
+    } finally {
+        if (!published) release(result)
+    }
+}
+
 data class FaceSwapUiState(
     val sourceUris: List<Uri> = emptyList(),
     val targetUri: Uri? = null,
@@ -71,6 +123,7 @@ data class FaceSwapUiState(
     val errorMessage: String? = null,
     val modelStatuses: Map<ModelId, ModelStatus> = ModelCatalog.all.associate { it.id to ModelStatus.Missing },
     val modelMessage: String? = null,
+    val qualitySettings: FaceQualitySettings = FaceQualitySettings(),
     val photoSwapPhase: PhotoSwapPhase = PhotoSwapPhase.IDLE,
     val photoSwapResult: MultiPhotoFaceSwapResult? = null,
     val photoSwapError: String? = null,
@@ -80,17 +133,11 @@ data class FaceSwapUiState(
 
     val canRunPhotoSwap: Boolean
         get() {
-            val requiredModels = setOf(
-                ModelId.YOLOFACE_8N,
-                ModelId.ARCFACE_W600K_R50,
-                ModelId.INSWAPPER_128_FP16,
-                ModelId.BISENET_RESNET_34,
-            )
             return phase == AnalysisPhase.MAPPING &&
                 photoSwapPhase != PhotoSwapPhase.RUNNING &&
                 targetBitmap != null &&
                 assignments.isNotEmpty() &&
-                requiredModels.all { modelStatuses[it] is ModelStatus.Ready }
+                qualitySettings.requiredModelIds().all { modelStatuses[it] is ModelStatus.Ready }
         }
 }
 
@@ -108,16 +155,24 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         faceEnhancerPipeline,
         faceParserPipeline,
     )
-    private val mutableState = MutableStateFlow(FaceSwapUiState())
+    private val mutableState = MutableStateFlow(
+        FaceSwapUiState(qualitySettings = FaceQualitySettingsSavedState.read(savedStateHandle)),
+    )
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val retiredPhotoResults = Collections.newSetFromMap(
+        IdentityHashMap<MultiPhotoFaceSwapResult, Boolean>(),
+    )
     private var analysisJob: Job? = null
     private var photoSwapJob: Job? = null
 
     val state: StateFlow<FaceSwapUiState> = mutableState.asStateFlow()
 
     internal fun injectUiStateForTest(testState: FaceSwapUiState) {
+        val previousResult = mutableState.value.photoSwapResult
+        if (previousResult !== testState.photoSwapResult) retirePhotoResult(previousResult)
         mutableState.value = testState
         persistAssignments()
+        FaceQualitySettingsSavedState.write(savedStateHandle, testState.qualitySettings)
     }
 
     init {
@@ -159,6 +214,7 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         val runningPhotoSwap = photoSwapJob
         runningPhotoSwap?.cancel()
         val previousState = mutableState.value
+        retirePhotoResult(previousState.photoSwapResult)
         mutableState.update {
             it.copy(
                 sourceBitmap = null,
@@ -173,7 +229,6 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                 photoSwapError = null,
             )
         }
-        releasePhotoResultDeferred(previousState.photoSwapResult)
         releaseInputBitmapsAfter(
             job = runningPhotoSwap,
             source = previousState.sourceBitmap,
@@ -269,15 +324,12 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
 
         photoSwapJob?.cancel()
         photoSwapJob = viewModelScope.launch {
-            val previousResult = mutableState.value.photoSwapResult
             mutableState.update {
                 it.copy(
                     photoSwapPhase = PhotoSwapPhase.RUNNING,
-                    photoSwapResult = null,
                     photoSwapError = null,
                 )
             }
-            releasePhotoResultDeferred(previousResult)
             try {
                 val result = multiPhotoSwapPipeline.process(
                     target = target,
@@ -285,13 +337,24 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                     targetsInStableOrder = current.targetFaces.map { face -> MultiPhotoTarget(face.id, face.toPixelBox(target)) },
                     assignments = selectedAssignments.map { MultiPhotoAssignment(it.targetFaceId, it.sourceFaceId) },
                     backend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
+                    restorationStrength = current.qualitySettings.effectiveRestorationStrength,
+                    swapBlendMaskMode = current.qualitySettings.swapBlendMaskMode(),
                 ) ?: throw IllegalStateException("No target face is assigned")
-                mutableState.update {
-                    it.copy(
-                        photoSwapPhase = PhotoSwapPhase.READY,
-                        photoSwapResult = result,
-                    )
-                }
+                publishOrReleaseOwnedResult(
+                    result = result,
+                    checkCanPublish = { currentCoroutineContext().ensureActive() },
+                    publish = { publishedResult ->
+                        val previousResult = mutableState.value.photoSwapResult
+                        if (previousResult !== publishedResult) retirePhotoResult(previousResult)
+                        mutableState.update {
+                            it.copy(
+                                photoSwapPhase = PhotoSwapPhase.READY,
+                                photoSwapResult = publishedResult,
+                            )
+                        }
+                    },
+                    release = { unpublishedResult -> recycleBitmap(unpublishedResult.finalBitmap) },
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -306,37 +369,37 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
     }
 
     fun assignSource(targetFaceId: FaceId, sourceFaceId: FaceId) {
-        val runningPhotoSwap = photoSwapJob
-        runningPhotoSwap?.cancel()
-        val previousResult = mutableState.value.photoSwapResult
-        mutableState.update {
-            it.copy(
+        mutateMapping { state ->
+            state.copy(
                 assignments = FaceAssignmentPlanner.replaceSource(
-                    assignments = it.assignments,
+                    assignments = state.assignments,
                     targetFaceId = targetFaceId,
                     sourceFaceId = sourceFaceId,
                 ),
-                photoSwapPhase = PhotoSwapPhase.IDLE,
-                photoSwapResult = null,
-                photoSwapError = null,
             )
         }
-        releasePhotoResultDeferred(previousResult)
-        persistAssignments()
     }
 
     fun setUnchanged(targetFaceId: FaceId) {
-        mutableState.update { it.copy(assignments = it.assignments.filterNot { assignment -> assignment.targetFaceId == targetFaceId }) }
-        persistAssignments()
+        mutateMapping { state ->
+            state.copy(
+                assignments = state.assignments.filterNot { assignment ->
+                    assignment.targetFaceId == targetFaceId
+                },
+            )
+        }
     }
 
     fun applySourceToAll(sourceFaceId: FaceId) {
-        mutableState.update { it.copy(assignments = FaceAssignmentPlanner.applySourceToAll(it.targetFaces, sourceFaceId)) }
-        persistAssignments()
+        mutateMapping { state ->
+            state.copy(
+                assignments = FaceAssignmentPlanner.applySourceToAll(state.targetFaces, sourceFaceId),
+            )
+        }
     }
 
     fun removeSource(sourceFaceId: FaceId) {
-        mutableState.update { state ->
+        mutateMapping { state ->
             val keptFaces = state.sourceFaces.filterNot { it.id == sourceFaceId }
             state.copy(
                 sourceFaces = keptFaces,
@@ -344,7 +407,54 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                 assignments = FaceAssignmentPlanner.clearSource(state.assignments, sourceFaceId),
             )
         }
+    }
+
+    fun setRestorationEnabled(enabled: Boolean) {
+        updateQualitySettings { settings -> settings.copy(restorationEnabled = enabled) }
+    }
+
+    fun setRestorationStrength(strength: Float) {
+        val sanitized = strength
+            .takeIf { value -> value.isFinite() && value in 0f..1f }
+            ?: FaceQualitySettings.DEFAULT_RESTORATION_STRENGTH
+        updateQualitySettings { settings -> settings.copy(restorationStrength = sanitized) }
+    }
+
+    fun setParserSwapMaskEnabled(enabled: Boolean) {
+        updateQualitySettings { settings -> settings.copy(parserSwapMaskEnabled = enabled) }
+    }
+
+    private inline fun mutateMapping(transform: (FaceSwapUiState) -> FaceSwapUiState) {
+        val current = mutableState.value
+        val transformed = transform(current)
+        if (transformed == current) return
+
+        photoSwapJob?.cancel()
+        retirePhotoResult(current.photoSwapResult)
+        mutableState.value = transformed.copy(
+            photoSwapPhase = PhotoSwapPhase.IDLE,
+            photoSwapResult = null,
+            photoSwapError = null,
+        )
         persistAssignments()
+    }
+
+    private inline fun updateQualitySettings(
+        transform: (FaceQualitySettings) -> FaceQualitySettings,
+    ) {
+        val current = mutableState.value
+        if (current.photoSwapPhase == PhotoSwapPhase.RUNNING) return
+        val updated = transform(current.qualitySettings)
+        if (updated == current.qualitySettings) return
+
+        retirePhotoResult(current.photoSwapResult)
+        mutableState.value = current.copy(
+            qualitySettings = updated,
+            photoSwapPhase = PhotoSwapPhase.IDLE,
+            photoSwapResult = null,
+            photoSwapError = null,
+        )
+        FaceQualitySettingsSavedState.write(savedStateHandle, updated)
     }
 
     fun dismissError() {
@@ -364,18 +474,19 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         val runningPhotoSwap = photoSwapJob
         runningPhotoSwap?.cancel()
         val current = mutableState.value
+        retirePhotoResult(current.photoSwapResult)
         mutableState.value = FaceSwapUiState(
             sourceUris = sourceUris,
             targetUri = targetUri,
             modelStatuses = current.modelStatuses,
             modelMessage = current.modelMessage,
+            qualitySettings = current.qualitySettings,
             phase = if (sourceUris.isNotEmpty() && targetUri != null) {
                 AnalysisPhase.READY
             } else {
                 AnalysisPhase.WAITING_FOR_MEDIA
             },
         )
-        releasePhotoResultDeferred(current.photoSwapResult)
         savedStateHandle.remove<ArrayList<String>>(SAVED_ASSIGNMENTS)
         releaseInputBitmapsAfter(
             job = runningPhotoSwap,
@@ -405,13 +516,14 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         bottom = bounds.bottom * bitmap.height.toDouble(),
     )
 
-    private fun releasePhotoResultDeferred(result: MultiPhotoFaceSwapResult?) {
-        result ?: return
-        mainHandler.post { recycleBitmap(result.finalBitmap) }
+    /** Called by Compose only after the corresponding result leaves the composition. */
+    fun onPhotoResultDisposed(result: MultiPhotoFaceSwapResult) {
+        if (!retiredPhotoResults.remove(result)) return
+        recycleBitmap(result.finalBitmap)
     }
 
-    private fun releasePhotoResultNow(result: MultiPhotoFaceSwapResult?) {
-        recycleBitmap(result?.finalBitmap)
+    private fun retirePhotoResult(result: MultiPhotoFaceSwapResult?) {
+        if (result != null) retiredPhotoResults.add(result)
     }
 
     private fun releaseInputBitmapsAfter(job: Job?, source: Bitmap?, target: Bitmap?) {
@@ -455,7 +567,9 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         val runningPhotoSwap = photoSwapJob
         val current = mutableState.value
         runningPhotoSwap?.cancel()
-        releasePhotoResultNow(current.photoSwapResult)
+        recycleBitmap(current.photoSwapResult?.finalBitmap)
+        retiredPhotoResults.forEach { result -> recycleBitmap(result.finalBitmap) }
+        retiredPhotoResults.clear()
         releaseInputBitmapsAfter(
             job = runningPhotoSwap,
             source = current.sourceBitmap,
