@@ -30,14 +30,19 @@ data class MultiPhotoFaceSwapResult(
     val recognizerBackend: InferenceBackend,
     val swapperBackend: InferenceBackend,
     val enhancerBackends: List<InferenceBackend>,
-    val parserBackends: List<InferenceBackend>,
+    val swapParserBackends: List<InferenceBackend>,
+    val enhancementParserBackends: List<InferenceBackend>,
     val protectedUnassignedRois: List<CompositeRoi>,
     val restorationStrength: Float,
+    val swapParserMs: Long,
     val enhancementMs: Long,
     val timings: PhotoFaceSwapTimings,
 ) {
     /** Stage-D compatibility view. */
     val pasteRois: List<CompositeRoi> get() = swapRois.map(AppliedFaceRoi::bounds)
+
+    /** Checkpoint-1 compatibility view; new code should select the pass explicitly. */
+    val parserBackends: List<InferenceBackend> get() = enhancementParserBackends
 }
 
 /**
@@ -46,14 +51,15 @@ data class MultiPhotoFaceSwapResult(
  * 1. detect the untouched target once and complete every assigned InSwapper operation;
  * 2. only after the entire swap loop has returned, restore those successful assignments.
  *
- * Each concrete inference method owns and closes its ONNX session before returning, so
- * no swapper session can coexist with GFPGAN or BiSeNet. Unassigned detected faces never
- * enter either loop.
+ * One BiSeNet session is reused across the task. It may coexist with InSwapper in pass 1
+ * and GFPGAN in pass 2, while the pass barrier guarantees InSwapper and GFPGAN never
+ * coexist. Unassigned detected faces never enter either loop.
  */
 class OnnxMultiPhotoFaceSwapPipeline(
     private val rawPipeline: OnnxRawFaceSwapPipeline,
     private val photoPipeline: OnnxPhotoFaceSwapPipeline,
     private val enhancerPipeline: OnnxFaceEnhancerPipeline? = null,
+    private val parserPipeline: OnnxFaceParserPipeline? = null,
 ) {
     suspend fun process(
         target: Bitmap,
@@ -62,6 +68,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
         assignments: List<MultiPhotoAssignment>,
         backend: RequestedInferenceBackend,
         restorationStrength: Float = 0f,
+        swapBlendMaskMode: SwapBlendMaskMode = SwapBlendMaskMode.PARSER_REGION,
     ): MultiPhotoFaceSwapResult? {
         require(restorationStrength.isFinite() && restorationStrength in 0f..1f) {
             "Restoration strength must be in [0, 1]"
@@ -81,15 +88,70 @@ class OnnxMultiPhotoFaceSwapPipeline(
 
         val started = SystemClock.elapsedRealtime()
         val (resolvedTargets, detectorBackend) = rawPipeline.detectFaces(target, backend)
+        val needsParser =
+            swapBlendMaskMode == SwapBlendMaskMode.PARSER_REGION || restorationStrength > 0f
+        var undeliveredResult: MultiPhotoFaceSwapResult? = null
+        try {
+            val result = if (needsParser) {
+                val parser = checkNotNull(parserPipeline) {
+                    "Parser blending/restoration was requested but no parser pipeline is configured"
+                }
+                parser.withSession(backend) { parserSession ->
+                    processWithParserSession(
+                        target = target,
+                        workItems = workItems,
+                        resolvedTargets = resolvedTargets,
+                        detectorBackend = detectorBackend,
+                        backend = backend,
+                        restorationStrength = restorationStrength,
+                        swapBlendMaskMode = swapBlendMaskMode,
+                        parserSession = parserSession,
+                        started = started,
+                    ).also { undeliveredResult = it }
+                }
+            } else {
+                processWithParserSession(
+                    target = target,
+                    workItems = workItems,
+                    resolvedTargets = resolvedTargets,
+                    detectorBackend = detectorBackend,
+                    backend = backend,
+                    restorationStrength = restorationStrength,
+                    swapBlendMaskMode = swapBlendMaskMode,
+                    parserSession = null,
+                    started = started,
+                ).also { undeliveredResult = it }
+            }
+            undeliveredResult = null
+            return result
+        } finally {
+            undeliveredResult?.finalBitmap?.recycleSafely()
+        }
+    }
+
+    private suspend fun processWithParserSession(
+        target: Bitmap,
+        workItems: List<WorkItem>,
+        resolvedTargets: List<DetectedFace5>,
+        detectorBackend: InferenceBackend,
+        backend: RequestedInferenceBackend,
+        restorationStrength: Float,
+        swapBlendMaskMode: SwapBlendMaskMode,
+        parserSession: FaceParserSession?,
+        started: Long,
+    ): MultiPhotoFaceSwapResult {
         var accumulated: IntArray? = null
+        var finalPixels: IntArray? = null
         val sourceEmbeddings = mutableMapOf<FaceId, FloatArray>()
         val producedEmbeddings = mutableListOf<FloatArray>()
         val appliedSwaps = mutableListOf<AppliedSwap>()
         val swapRois = mutableListOf<AppliedFaceRoi>()
         val enhanceRois = mutableListOf<AppliedFaceRoi>()
         val enhancerBackends = mutableListOf<InferenceBackend>()
-        val parserBackends = mutableListOf<InferenceBackend>()
+        val swapParserBackends = mutableListOf<InferenceBackend>()
+        val enhancementParserBackends = mutableListOf<InferenceBackend>()
         var protectedUnassignedRois = emptyList<CompositeRoi>()
+        var swapParserMs = 0L
         var enhancementMs = 0L
         var lastSwap: PhotoFaceSwapResult? = null
         var workingSwapBitmap: Bitmap? = null
@@ -108,6 +170,8 @@ class OnnxMultiPhotoFaceSwapPipeline(
                         resolvedTargetFaces = resolvedTargets,
                         basePixels = accumulated,
                         cachedSourceEmbedding = sourceEmbeddings[workItem.source.id],
+                        swapBlendMaskMode = swapBlendMaskMode,
+                        parserSession = parserSession,
                         backend = backend,
                     ),
                 )
@@ -115,6 +179,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
                 sourceEmbeddings.putIfAbsent(workItem.source.id, next.sourceEmbedding)
 
                 val nextPixels = next.finalBitmap.readPixels()
+                accumulated?.fill(0)
                 workingSwapBitmap?.recycleSafely()
                 workingSwapBitmap = next.finalBitmap
                 accumulated = nextPixels
@@ -125,10 +190,13 @@ class OnnxMultiPhotoFaceSwapPipeline(
                     sourceId = workItem.source.id,
                     bounds = next.pasteRoi,
                 )
+                next.parserBackend?.let(swapParserBackends::add)
+                swapParserMs += next.timings.parserMs
+                next.cropMask.fill(0f)
             }
 
-            val swapResult = lastSwap ?: return null
-            var finalPixels = requireNotNull(accumulated)
+            val swapResult = checkNotNull(lastSwap) { "No assigned face produced a swap" }
+            finalPixels = requireNotNull(accumulated)
 
             // Pass boundary: every photoPipeline call above has returned, therefore its
             // swapper session has been closed. Strength zero bypasses both model checks
@@ -136,6 +204,9 @@ class OnnxMultiPhotoFaceSwapPipeline(
             if (restorationStrength > 0f) {
                 val enhancer = checkNotNull(enhancerPipeline) {
                     "Restoration was requested but no enhancer pipeline is configured"
+                }
+                val parser = checkNotNull(parserSession) {
+                    "Restoration requires an open face parser session"
                 }
                 val appliedTargetFaces = appliedSwaps.map(AppliedSwap::targetFace).toSet()
                 protectedUnassignedRois = resolvedTargets
@@ -145,14 +216,16 @@ class OnnxMultiPhotoFaceSwapPipeline(
                 for (applied in appliedSwaps) {
                     coroutineContext.ensureActive()
                     val enhanced = enhancer.enhance(
-                        basePixels = finalPixels,
+                        basePixels = requireNotNull(finalPixels),
                         baseWidth = target.width,
                         baseHeight = target.height,
                         targetFace = applied.targetFace,
                         strength = restorationStrength,
                         backend = backend,
+                        parserSession = parser,
                         protectedBaseRois = protectedUnassignedRois,
                     )
+                    finalPixels?.fill(0)
                     finalPixels = enhanced.pixels
                     enhanceRois += AppliedFaceRoi(
                         targetId = applied.workItem.target.id,
@@ -160,14 +233,14 @@ class OnnxMultiPhotoFaceSwapPipeline(
                         bounds = enhanced.roi,
                     )
                     enhancerBackends += enhanced.enhancerBackend
-                    parserBackends += enhanced.parserBackend
+                    enhancementParserBackends += enhanced.parserBackend
                 }
                 enhancementMs = SystemClock.elapsedRealtime() - enhancementStarted
             }
 
             resultBitmap = if (restorationStrength > 0f) {
                 Bitmap.createBitmap(
-                    finalPixels,
+                    requireNotNull(finalPixels),
                     target.width,
                     target.height,
                     Bitmap.Config.ARGB_8888,
@@ -187,9 +260,11 @@ class OnnxMultiPhotoFaceSwapPipeline(
                 recognizerBackend = swapResult.recognizerBackend,
                 swapperBackend = swapResult.swapperBackend,
                 enhancerBackends = enhancerBackends.toList(),
-                parserBackends = parserBackends.toList(),
+                swapParserBackends = swapParserBackends.toList(),
+                enhancementParserBackends = enhancementParserBackends.toList(),
                 protectedUnassignedRois = protectedUnassignedRois,
                 restorationStrength = restorationStrength,
+                swapParserMs = swapParserMs,
                 enhancementMs = enhancementMs,
                 timings = swapResult.timings.copy(
                     totalMs = SystemClock.elapsedRealtime() - started,
@@ -202,6 +277,8 @@ class OnnxMultiPhotoFaceSwapPipeline(
             // This runs after success, inference errors and cancellation.
             producedEmbeddings.forEach { embedding -> embedding.fill(0f) }
             sourceEmbeddings.clear()
+            finalPixels?.fill(0)
+            accumulated?.fill(0)
             workingSwapBitmap?.recycleSafely()
             if (!delivered) resultBitmap?.recycleSafely()
         }

@@ -279,7 +279,7 @@ private fun ModelSetupCard(
             }
 
             Text(
-                text = "Рабочий swapper: InSwapper fp16 · 128×128. GFPGAN и BiSeNet используются проходом восстановления; настройка силы появится в следующем UI-срезе E2.",
+                text = "Рабочий swapper: InSwapper fp16 · 128×128. BiSeNet защищает границы лица при свапе и восстановлении; GFPGAN используется проходом восстановления. Настройка силы появится в следующем UI-срезе E2.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

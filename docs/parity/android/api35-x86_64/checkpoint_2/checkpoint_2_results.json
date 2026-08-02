@@ -1,0 +1,151 @@
+{
+  "device_api": 35,
+  "backend": "CPU",
+  "pairs": [
+    {
+      "pair": "pair_02",
+      "box_before_matches_committed_pixels": true,
+      "production_parser_matches_isolated_pixels": true,
+      "parser_backend": "CPU",
+      "parser_inference_ms": 5099,
+      "production_parser_inference_ms": 3453,
+      "runtime_target_landmarks": [
+        [
+          623.4881575584412,
+          507.31099691390995
+        ],
+        [
+          817.2254865646363,
+          484.0291874885559
+        ],
+        [
+          767.9377696037293,
+          613.6586940765382
+        ],
+        [
+          662.0918154716492,
+          738.5162901878357
+        ],
+        [
+          821.29420337677,
+          719.4226089477539
+        ]
+      ],
+      "target_to_swapper_crop": [
+        [
+          0.17340231938410886,
+          -0.016686924889517337,
+          -53.79320841303493
+        ],
+        [
+          0.016686924889517337,
+          0.17340231938410886,
+          -46.64507318684953
+        ]
+      ],
+      "paste_roi": {
+        "left": 333,
+        "top": 166,
+        "right": 1135,
+        "bottom": 969
+      },
+      "outside_box_roi_changed_pixels": 0,
+      "outside_parser_roi_changed_pixels": 0,
+      "box_vs_parser_changed_pixels": 394819,
+      "excluded_band_crop_pixels": 4839,
+      "excluded_band_box_mae_to_target": 11.930633050905834,
+      "excluded_band_parser_mae_to_target": 0.013237232986852766,
+      "color_adjustment_unchanged": true
+    },
+    {
+      "pair": "pair_03",
+      "box_before_matches_committed_pixels": true,
+      "production_parser_matches_isolated_pixels": true,
+      "parser_backend": "CPU",
+      "parser_inference_ms": 4007,
+      "production_parser_inference_ms": 3763,
+      "runtime_target_landmarks": [
+        [
+          568.8910294532776,
+          583.9743541717529
+        ],
+        [
+          761.001565361023,
+          544.8852773666382
+        ],
+        [
+          704.2813425064087,
+          673.9964776039124
+        ],
+        [
+          625.9566304206849,
+          787.2099400520325
+        ],
+        [
+          787.6304809570313,
+          754.7641897201538
+        ]
+      ],
+      "target_to_swapper_crop": [
+        [
+          0.18266382545001641,
+          -0.03589626362813761,
+          -37.91670299707471
+        ],
+        [
+          0.03589626362813761,
+          0.18266382545001641,
+          -75.0474652583832
+        ]
+      ],
+      "paste_roi": {
+        "left": 277,
+        "top": 223,
+        "right": 1085,
+        "bottom": 1031
+      },
+      "outside_box_roi_changed_pixels": 0,
+      "outside_parser_roi_changed_pixels": 0,
+      "box_vs_parser_changed_pixels": 363121,
+      "excluded_band_crop_pixels": 4863,
+      "excluded_band_box_mae_to_target": 11.03955034615121,
+      "excluded_band_parser_mae_to_target": 0.00798932087822622,
+      "color_adjustment_unchanged": true
+    }
+  ],
+  "visual_gate": "manual checklist: hair\/temple\/beard boundary on pair_02 and pair_03",
+  "session_events": [
+    "open:bisenet_resnet_34.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "close:bisenet_resnet_34.onnx"
+  ],
+  "observed_peak_pairs": [
+    [
+      "bisenet_resnet_34.onnx"
+    ],
+    [
+      "bisenet_resnet_34.onnx",
+      "inswapper_128_fp16.onnx"
+    ]
+  ],
+  "max_simultaneous_heavy_sessions": 2
+}

@@ -64,6 +64,7 @@ class StageDMultiFaceInstrumentedTest {
                 targetsInStableOrder = targets,
                 assignments = assignments,
                 backend = RequestedInferenceBackend.CPU_ONLY,
+                swapBlendMaskMode = SwapBlendMaskMode.AFFINE_BOX,
             )
             val swap = requireNotNull(result) { "coordinator returned no result" }
             val finalPixels = swap.finalBitmap.pixels()

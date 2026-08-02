@@ -38,7 +38,8 @@ class StageETwoPassCoordinatorInstrumentedTest {
         val raw = OnnxRawFaceSwapPipeline(store, sessionLifecycle = listener)
         val photo = OnnxPhotoFaceSwapPipeline(store, rawPipeline = raw)
         val enhancer = OnnxFaceEnhancerPipeline(store, sessionLifecycle = listener)
-        val coordinator = OnnxMultiPhotoFaceSwapPipeline(raw, photo, enhancer)
+        val parser = OnnxFaceParserPipeline(store, sessionLifecycle = listener)
+        val coordinator = OnnxMultiPhotoFaceSwapPipeline(raw, photo, enhancer, parser)
 
         val target = bitmap("inputs/stage_d_group_target.png")
         val sourceBitmaps = (1..3).map { bitmap("inputs/pair_%02d_source.png".format(it)) }
@@ -93,6 +94,7 @@ class StageETwoPassCoordinatorInstrumentedTest {
                     assignments = assignments,
                     backend = RequestedInferenceBackend.CPU_ONLY,
                     restorationStrength = 0f,
+                    swapBlendMaskMode = SwapBlendMaskMode.AFFINE_BOX,
                 ),
             )
             val baselineMs = (System.nanoTime() - baselineStarted) / 1_000_000L
@@ -125,6 +127,7 @@ class StageETwoPassCoordinatorInstrumentedTest {
                     assignments = assignments,
                     backend = RequestedInferenceBackend.CPU_ONLY,
                     restorationStrength = RESTORATION_STRENGTH,
+                    swapBlendMaskMode = SwapBlendMaskMode.AFFINE_BOX,
                 ),
             )
             val restoredMs = (System.nanoTime() - restoredStarted) / 1_000_000L
@@ -155,6 +158,7 @@ class StageETwoPassCoordinatorInstrumentedTest {
                     assignments = assignments,
                     backend = RequestedInferenceBackend.CPU_ONLY,
                     restorationStrength = MAXIMUM_RESTORATION_STRENGTH,
+                    swapBlendMaskMode = SwapBlendMaskMode.AFFINE_BOX,
                 ),
             )
             val maximumMs = (System.nanoTime() - maximumStarted) / 1_000_000L
@@ -218,7 +222,11 @@ class StageETwoPassCoordinatorInstrumentedTest {
                 .put("maximum_restored_session_events", JSONArray(maximumEvents))
                 .put("max_simultaneous_heavy_sessions", listener.maxSimultaneousHeavySessions)
             File(outputDirectory, "checkpoint_1_results.json").writeText(metrics.toString(2))
-            assertEquals("at most one swapper/restorer/parser session may be open", 1, listener.maxSimultaneousHeavySessions)
+            assertEquals(
+                "shared BiSeNet may pair with swapper or restorer, but never both",
+                2,
+                listener.maxSimultaneousHeavySessions,
+            )
         } finally {
             baseline?.finalBitmap?.recycleSafely()
             restored?.finalBitmap?.recycleSafely()
@@ -334,13 +342,19 @@ class StageETwoPassCoordinatorInstrumentedTest {
         assertEquals(3, heavy.count { it == "close:$INSWAPPER_FILE" })
         assertEquals(3, heavy.count { it == "open:$GFPGAN_FILE" })
         assertEquals(3, heavy.count { it == "close:$GFPGAN_FILE" })
-        assertEquals(3, heavy.count { it == "open:$BISENET_FILE" })
-        assertEquals(3, heavy.count { it == "close:$BISENET_FILE" })
+        assertEquals(1, heavy.count { it == "open:$BISENET_FILE" })
+        assertEquals(1, heavy.count { it == "close:$BISENET_FILE" })
         val lastSwapperClose = heavy.indexOfLast { it == "close:$INSWAPPER_FILE" }
-        val firstRestorationOpen = heavy.indexOfFirst {
-            it == "open:$GFPGAN_FILE" || it == "open:$BISENET_FILE"
-        }
-        assertTrue("all swaps must close before restoration opens: $heavy", lastSwapperClose in 0 until firstRestorationOpen)
+        val firstGfpganOpen = heavy.indexOfFirst { it == "open:$GFPGAN_FILE" }
+        val parserOpen = heavy.indexOfFirst { it == "open:$BISENET_FILE" }
+        val parserClose = heavy.indexOfLast { it == "close:$BISENET_FILE" }
+        val lastGfpganClose = heavy.indexOfLast { it == "close:$GFPGAN_FILE" }
+        assertTrue(
+            "all swaps must close before GFPGAN opens: $heavy",
+            lastSwapperClose in 0 until firstGfpganOpen,
+        )
+        assertTrue("shared parser must open before swap pass: $heavy", parserOpen in 0 until lastSwapperClose)
+        assertTrue("shared parser must close after restore pass: $heavy", parserClose > lastGfpganClose)
     }
 
     private fun identityDeltas(baseline: JSONObject, restored: JSONObject): JSONArray {

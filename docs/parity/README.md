@@ -445,6 +445,11 @@ restoration, 322 886 мс при силе 0.8 и 328 106 мс при силе 1.
 Максимум одновременно открытых среди InSwapper/GFPGAN/BiSeNet — `1`. При силе 0
 GFPGAN и BiSeNet не проверялись и не открывались.
 
+Это исторический lifetime-снимок контрольной точки 1 до подключения parser-маски к
+первому проходу. Численные identity baseline и изображения этого прогона остаются
+неизменяемыми. Актуальная production-схема с одной общей BiSeNet-сессией и максимум
+двумя тяжёлыми сессиями подтверждена контрольной точкой 2 ниже.
+
 Чтобы nearby-незаменяемое лицо нельзя было затронуть даже при пересечении кропов,
 координатор вычисляет полный потенциальный `ffhq_512` ROI каждого неназначенного
 detected face и передаёт его compositor как глобальную no-write область. В этом прогоне
@@ -490,3 +495,90 @@ ArcFace-критерием; значения AVD не заменяются, а �
 - `android/api35-x86_64/checkpoint_1/strength_0.png` — baseline;
 - `android/api35-x86_64/checkpoint_1/strength_0_8.png` — рабочая сила восстановления;
 - `android/api35-x86_64/checkpoint_1/strength_1_0.png` — worst-case восстановления.
+
+## E1, контрольная точка 2: parser-маска блендинга свапа
+
+### Production-порядок и маска
+
+Одна BiSeNet-сессия открывается перед обработкой назначений и переиспользуется до
+конца всей photo-задачи. В первом проходе она сосуществует с последовательно
+открываемыми InSwapper-сессиями и строит region mask по сырому swapped crop. После
+закрытия последней swapper-сессии начинается второй проход: GFPGAN открывается только
+тогда и может сосуществовать с той же BiSeNet-сессией. InSwapper и GFPGAN никогда не
+открыты одновременно; BiSeNet не перезагружается для каждого лица.
+
+Порядок parser-обработки портирован из FaceFusion 3.7.1:
+
+1. swapped crop 128×128 масштабируется до 512×512 bilinear half-pixel sampler;
+2. RGB нормализуется ImageNet mean/std и подаётся как NCHW;
+3. по основному tensor `[1,19,512,512]` вычисляется argmax;
+4. выбираются классы `1,2,3,4,5,6,10,11,12,13`;
+5. binary mask возвращается в размер swap-кропа, размывается Gaussian `sigma=5` и
+   преобразуется как `(clip(mask, 0.5, 1) - 0.5) * 2`;
+6. итоговая alpha равна `min(affine box mask, parser region mask)`.
+
+Статистика цветосогласования намеренно рассчитывается по прежней box-mask. Поэтому
+сравнение изолирует геометрию parser-маски: старый box-only путь остался побитово
+совместим, а `FaceColorAdjustment` и color-matched crop не изменились.
+
+### API 35 proof
+
+Проверка выполнена на AVD API 35 x86_64, ONNX Runtime Android 1.26.0, CPU,
+`airplane_mode_on=1`:
+
+```powershell
+adb shell am instrument -w -r `
+  -e class com.faceswaplocal.app.inference.StageESwapParserMaskInstrumentedTest `
+  com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Фактический результат: `OK (2 tests)`, 414,922 с. Для `pair_02` и `pair_03` тест
+сначала получил один raw InSwapper crop, затем собрал прежний box-only и новый
+parser-вариант из одинаковых pixels. Дополнительный вызов production
+`OnnxPhotoFaceSwapPipeline` побитово совпал с изолированным parser-композитом и его
+маской. Старый box-вариант побитово совпал с ранее закоммиченным результатом этапа C.
+
+| Метрика | `pair_02` | `pair_03` |
+| --- | ---: | ---: |
+| BiSeNet isolated inference | 5 099 ms | 4 007 ms |
+| BiSeNet production inference | 3 453 ms | 3 763 ms |
+| Пикселей вне paste ROI, изменённых parser-путём | 0 | 0 |
+| Пикселей box ↔ parser, которые различаются | 394 819 | 363 121 |
+| Пикселей crop в исключённой parser полосе | 4 839 | 4 863 |
+| MAE box к target в исключённой полосе | 11,930633 | 11,039550 |
+| MAE parser к target в исключённой полосе | 0,013237 | 0,007989 |
+
+Отдельный production-прогон `pair_02` с restoration strength `0.8` занял
+133 596 ms: parser в swap-проходе — 4 460 ms, enhancer-проход — 63 338 ms.
+Listener, отмечающий `close` только после реального `OrtSession.close()`, подтвердил
+обе допустимые пиковые пары:
+
+- первый проход: BiSeNet 93 632 546 B + InSwapper 277 680 829 B =
+  371 313 375 B файлов моделей;
+- второй проход: BiSeNet 93 632 546 B + GFPGAN 340 299 087 B =
+  433 931 633 B файлов моделей.
+
+Это суммы размеров файлов весов, а не измерение Java/native heap. Наблюдаемый максимум
+открытых тяжёлых сессий — `2`; сочетания InSwapper+GFPGAN не было.
+
+### Визуальный вывод
+
+На `pair_02` исчез прежний переход у верхнего лба, правой линии волос и виска; волосы
+и висок target сохранены. На `pair_03` исчезли переходы по линии волос и нижнему
+периметру бороды; волосы и борода target сохранены. Новых двоений, смещений глаз или
+рта не обнаружено. Цель parser-маски достигнута на обеих контрольных парах.
+
+Отличие оттенка лица от шеи осталось. Это отделяет следующий дефект от геометрии
+маски: дальнейшая диагностика должна проверять color matching, а не расширять
+parser-region.
+
+Артефакты:
+
+- `android/api35-x86_64/checkpoint_2/checkpoint_2_results.json` — геометрия,
+  production/isolated proof и численные метрики;
+- `android/api35-x86_64/checkpoint_2/session_lifecycle_results.json` — реальный
+  open/close журнал и пиковые пары;
+- `android/api35-x86_64/checkpoint_2/pair_02_box_vs_parser.png` и
+  `pair_03_box_vs_parser.png` — сравнения до/после;
+- `STAGE_C_VISUAL_CHECKLIST.md` — обновлённый визуальный чек-лист рядом с замечаниями
+  этапа C.

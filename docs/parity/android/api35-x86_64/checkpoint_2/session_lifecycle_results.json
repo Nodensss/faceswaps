@@ -1,0 +1,35 @@
+{
+  "pair": "pair_02",
+  "restoration_strength": 0.8,
+  "elapsed_ms": 133596,
+  "swap_parser_ms": 4460,
+  "enhancement_ms": 63338,
+  "events": [
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:bisenet_resnet_34.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:gfpgan_1.4.onnx",
+    "close:gfpgan_1.4.onnx",
+    "close:bisenet_resnet_34.onnx"
+  ],
+  "observed_peak_pairs": [
+    [
+      "bisenet_resnet_34.onnx"
+    ],
+    [
+      "bisenet_resnet_34.onnx",
+      "gfpgan_1.4.onnx"
+    ],
+    [
+      "bisenet_resnet_34.onnx",
+      "inswapper_128_fp16.onnx"
+    ]
+  ],
+  "max_simultaneous_heavy_sessions": 2
+}

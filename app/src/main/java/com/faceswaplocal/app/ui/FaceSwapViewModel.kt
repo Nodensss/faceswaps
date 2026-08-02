@@ -25,6 +25,7 @@ import com.faceswaplocal.app.inference.OnnxPhotoFaceSwapPipeline
 import com.faceswaplocal.app.inference.OnnxRawFaceSwapPipeline
 import com.faceswaplocal.app.inference.OnnxMultiPhotoFaceSwapPipeline
 import com.faceswaplocal.app.inference.OnnxFaceEnhancerPipeline
+import com.faceswaplocal.app.inference.OnnxFaceParserPipeline
 import com.faceswaplocal.app.inference.MultiPhotoAssignment
 import com.faceswaplocal.app.inference.MultiPhotoSource
 import com.faceswaplocal.app.inference.MultiPhotoTarget
@@ -83,6 +84,7 @@ data class FaceSwapUiState(
                 ModelId.YOLOFACE_8N,
                 ModelId.ARCFACE_W600K_R50,
                 ModelId.INSWAPPER_128_FP16,
+                ModelId.BISENET_RESNET_34,
             )
             return phase == AnalysisPhase.MAPPING &&
                 photoSwapPhase != PhotoSwapPhase.RUNNING &&
@@ -99,10 +101,12 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
     private val rawPipeline = OnnxRawFaceSwapPipeline(modelStore)
     private val photoSwapPipeline = OnnxPhotoFaceSwapPipeline(modelStore, rawPipeline = rawPipeline)
     private val faceEnhancerPipeline = OnnxFaceEnhancerPipeline(modelStore)
+    private val faceParserPipeline = OnnxFaceParserPipeline(modelStore)
     private val multiPhotoSwapPipeline = OnnxMultiPhotoFaceSwapPipeline(
         rawPipeline,
         photoSwapPipeline,
         faceEnhancerPipeline,
+        faceParserPipeline,
     )
     private val mutableState = MutableStateFlow(FaceSwapUiState())
     private val mainHandler = Handler(Looper.getMainLooper())

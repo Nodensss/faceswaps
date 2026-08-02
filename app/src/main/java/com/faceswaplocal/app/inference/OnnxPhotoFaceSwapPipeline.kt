@@ -8,6 +8,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
+enum class SwapBlendMaskMode {
+    /** Frozen Stage-C/D regression path. */
+    AFFINE_BOX,
+
+    /** Production Stage-E path: box mask intersected with the BiSeNet face region. */
+    PARSER_REGION,
+}
+
 data class PhotoFaceSwapRequest(
     val source: Bitmap,
     val target: Bitmap,
@@ -17,6 +25,8 @@ data class PhotoFaceSwapRequest(
     /** Packed pixels of preceding compositing steps; geometry always uses [target]. */
     val basePixels: IntArray? = null,
     val cachedSourceEmbedding: FloatArray? = null,
+    val swapBlendMaskMode: SwapBlendMaskMode = SwapBlendMaskMode.AFFINE_BOX,
+    val parserSession: FaceParserSession? = null,
     val backend: RequestedInferenceBackend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
 )
 
@@ -24,6 +34,7 @@ data class PhotoFaceSwapTimings(
     val detectorMs: Long,
     val recognizerMs: Long,
     val swapperMs: Long,
+    val parserMs: Long,
     val compositingMs: Long,
     val totalMs: Long,
 )
@@ -43,6 +54,7 @@ data class PhotoFaceSwapResult(
     val detectorBackend: InferenceBackend,
     val recognizerBackend: InferenceBackend,
     val swapperBackend: InferenceBackend,
+    val parserBackend: InferenceBackend?,
     val timings: PhotoFaceSwapTimings,
     val sourceEmbedding: FloatArray,
 )
@@ -84,16 +96,40 @@ class OnnxPhotoFaceSwapPipeline(
                     val targetPixels = request.basePixels ?: request.target.readPixels()
                     val targetCropPixels = raw.alignedTarget.readPixels()
                     val swappedCropPixels = raw.rawOutputBitmap.readPixels()
-                    val composite = FaceCompositor.composite(
-                        targetPixels = targetPixels,
-                        targetWidth = request.target.width,
-                        targetHeight = request.target.height,
-                        targetCropPixels = targetCropPixels,
-                        swappedCropPixels = swappedCropPixels,
-                        cropWidth = raw.swapper.cropSize,
-                        cropHeight = raw.swapper.cropSize,
-                        targetToCrop = raw.targetToSwapperCrop,
-                    )
+                    var parserMask: FloatArray? = null
+                    var parserBackend: InferenceBackend? = null
+                    var parserMs = 0L
+                    val composite = try {
+                        if (request.swapBlendMaskMode == SwapBlendMaskMode.PARSER_REGION) {
+                            val parser = checkNotNull(request.parserSession) {
+                                "Parser-region blending requires an open face parser session"
+                            }
+                            val parsed = parser.createRegionMask(
+                                cropPixels = swappedCropPixels,
+                                cropWidth = raw.swapper.cropSize,
+                                cropHeight = raw.swapper.cropSize,
+                            )
+                            parserMask = parsed.mask
+                            parserBackend = parsed.backend
+                            parserMs = parsed.inferenceMs
+                        }
+                        coroutineContext.ensureActive()
+                        FaceCompositor.composite(
+                            targetPixels = targetPixels,
+                            targetWidth = request.target.width,
+                            targetHeight = request.target.height,
+                            targetCropPixels = targetCropPixels,
+                            swappedCropPixels = swappedCropPixels,
+                            cropWidth = raw.swapper.cropSize,
+                            cropHeight = raw.swapper.cropSize,
+                            targetToCrop = raw.targetToSwapperCrop,
+                            blendConstraintMask = parserMask,
+                        )
+                    } finally {
+                        parserMask?.fill(0f)
+                        targetCropPixels.fill(0)
+                        swappedCropPixels.fill(0)
+                    }
                     coroutineContext.ensureActive()
                     val resultBitmap = Bitmap.createBitmap(
                         composite.pixels,
@@ -112,10 +148,12 @@ class OnnxPhotoFaceSwapPipeline(
                         detectorBackend = raw.detectorBackend,
                         recognizerBackend = raw.recognizerBackend,
                         swapperBackend = raw.swapperBackend,
+                        parserBackend = parserBackend,
                         timings = PhotoFaceSwapTimings(
                             detectorMs = raw.timings.detectorMs,
                             recognizerMs = raw.timings.recognizerMs,
                             swapperMs = raw.timings.swapperMs,
+                            parserMs = parserMs,
                             compositingMs = compositingMs,
                             totalMs = elapsedRealtimeMs() - totalStarted,
                         ),

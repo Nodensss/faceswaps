@@ -77,17 +77,36 @@ object FaceCompositor {
         cropWidth: Int,
         cropHeight: Int,
         targetToCrop: AffineMatrix,
+        /** Optional aligned-crop mask that can only reduce the box-mask paste alpha. */
+        blendConstraintMask: FloatArray? = null,
     ): FaceCompositeResult {
         requireImage(targetPixels, targetWidth, targetHeight, "Target")
         requireImage(targetCropPixels, cropWidth, cropHeight, "Aligned target crop")
         requireImage(swappedCropPixels, cropWidth, cropHeight, "Swapped crop")
         requireFinite(targetToCrop)
 
-        val cropMask = createBoxMask(cropWidth, cropHeight)
+        val boxMask = createBoxMask(cropWidth, cropHeight)
+        blendConstraintMask?.let { constraint ->
+            require(constraint.size == boxMask.size) {
+                "Blend constraint mask size must match crop dimensions"
+            }
+            require(constraint.all { it.isFinite() && it in 0f..1f }) {
+                "Blend constraint mask values must be finite and within 0..1"
+            }
+        }
+        val effectiveCropMask = if (blendConstraintMask == null) {
+            // Preserve the pre-parser path exactly, including the generated mask values.
+            boxMask
+        } else {
+            FloatArray(boxMask.size) { index ->
+                min(boxMask[index], blendConstraintMask[index])
+            }
+        }
         val colorMatch = matchCropColors(
             targetCropPixels = targetCropPixels,
             swappedCropPixels = swappedCropPixels,
-            mask = cropMask,
+            // Parser coverage must not change the established Stage C colour statistics.
+            mask = boxMask,
             width = cropWidth,
             height = cropHeight,
         )
@@ -96,7 +115,7 @@ object FaceCompositor {
             baseWidth = targetWidth,
             baseHeight = targetHeight,
             cropPixels = colorMatch.pixels,
-            cropMask = cropMask,
+            cropMask = effectiveCropMask,
             cropWidth = cropWidth,
             cropHeight = cropHeight,
             baseToCrop = targetToCrop,
@@ -106,7 +125,7 @@ object FaceCompositor {
             pixels = paste.pixels,
             width = targetWidth,
             height = targetHeight,
-            cropMask = cropMask,
+            cropMask = effectiveCropMask,
             warpedMask = paste.warpedMask,
             colorMatchedCrop = colorMatch.pixels,
             colorAdjustment = colorMatch.adjustment,

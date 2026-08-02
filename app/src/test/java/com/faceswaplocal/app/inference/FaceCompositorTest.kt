@@ -177,6 +177,98 @@ class FaceCompositorTest {
     }
 
     @Test
+    fun `blend constraint limits paste alpha and is returned as the effective crop mask`() {
+        val width = 4
+        val target = IntArray(width * width) { argb(255, 5, 10, 15) }
+        val targetCrop = IntArray(width * width) { index ->
+            argb(255, 40 + index, 60 + index, 80 + index)
+        }
+        val swappedCrop = IntArray(width * width) { index ->
+            argb(255, 180 - index, 160 - index, 140 - index)
+        }
+        val constraint = FloatArray(width * width) { 1f }.also {
+            it[index(1, 1, width)] = 0f
+            it[index(2, 1, width)] = 0.25f
+        }
+
+        val unconstrained = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = targetCrop,
+            swappedCropPixels = swappedCrop,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+        )
+        val constrained = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = targetCrop,
+            swappedCropPixels = swappedCrop,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+            blendConstraintMask = constraint,
+        )
+
+        assertEquals(0f, constrained.cropMask[index(1, 1, width)], 0f)
+        assertEquals(0.25f, constrained.cropMask[index(2, 1, width)], 0f)
+        assertEquals(0f, constrained.warpedMask[index(1, 1, width)], 0f)
+        assertEquals(0.25f, constrained.warpedMask[index(2, 1, width)], 0f)
+        assertEquals(target[index(1, 1, width)], constrained.pixels[index(1, 1, width)])
+        assertNotEquals(target[index(1, 1, width)], unconstrained.pixels[index(1, 1, width)])
+        assertNotEquals(
+            unconstrained.pixels[index(2, 1, width)],
+            constrained.pixels[index(2, 1, width)],
+        )
+        assertEquals(
+            unconstrained.pixels[index(1, 2, width)],
+            constrained.pixels[index(1, 2, width)],
+        )
+    }
+
+    @Test
+    fun `blend constraint leaves box-mask color adjustment unchanged`() {
+        val width = 4
+        val target = IntArray(width * width) { argb(255, 10, 20, 30) }
+        val targetCrop = IntArray(width * width) { index ->
+            argb(255, 30 + index * 2, 70 + index, 110 - index)
+        }
+        val swappedCrop = IntArray(width * width) { index ->
+            argb(255, 150 - index, 40 + index * 3, 60 + index)
+        }
+
+        val withoutConstraint = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = targetCrop,
+            swappedCropPixels = swappedCrop,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+        )
+        val withConstraint = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = targetCrop,
+            swappedCropPixels = swappedCrop,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+            blendConstraintMask = FloatArray(width * width) { index ->
+                if (index % 2 == 0) 0f else 0.4f
+            },
+        )
+
+        assertEquals(withoutConstraint.colorAdjustment, withConstraint.colorAdjustment)
+        assertArrayEquals(withoutConstraint.colorMatchedCrop, withConstraint.colorMatchedCrop)
+    }
+
+    @Test
     fun `translated inverse affine limits changes and mask to its target ROI`() {
         val targetWidth = 10
         val targetHeight = 8

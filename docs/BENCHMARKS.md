@@ -1,5 +1,35 @@
 # Benchmarks FaceSwapLocal
 
+## E1, контрольная точка 2: parser-маска свапа, API 35 x86_64
+
+Дата: 2026-08-02. Входы `pair_02` и `pair_03` 1254×1254, InSwapper + BiSeNet
+parser-mask; отдельная проверка lifetime — `pair_02` с GFPGAN strength `0.8`.
+ONNX Runtime Android 1.26.0, CPU, `airplane_mode_on=1`. Полный instrumentation:
+414,922 с, `OK (2 tests)`.
+
+| Проверка | `pair_02` | `pair_03` |
+| --- | ---: | ---: |
+| BiSeNet isolated inference | 5 099 ms | 4 007 ms |
+| BiSeNet production inference | 3 453 ms | 3 763 ms |
+| Изменено пикселей вне paste ROI | 0 | 0 |
+| MAE box к target в исключённой parser полосе | 11,930633 | 11,039550 |
+| MAE parser к target в исключённой parser полосе | 0,013237 | 0,007989 |
+
+Production lifecycle-прогон `pair_02` с restoration strength `0.8`: 133 596 ms,
+из них parser swap-прохода 4 460 ms, enhancer-проход 63 338 ms. Одна BiSeNet-сессия
+переиспользовалась между проходами и всеми лицами; максимум одновременно открытых
+тяжёлых сессий — `2`.
+
+| Проход | Пиковая пара | Сумма размеров файлов моделей |
+| --- | --- | ---: |
+| Все свапы | BiSeNet + InSwapper | 371 313 375 B |
+| Все восстановления | BiSeNet + GFPGAN | 433 931 633 B |
+
+Сумма файлов не является измерением peak heap: ORT buffers и промежуточные tensors в
+неё не входят. Peak Java/native heap и thermal status не измерялись; AVD не является
+reference device. Полные результаты:
+`docs/parity/android/api35-x86_64/checkpoint_2/`.
+
 ## E1, контрольная точка 1: two-pass coordinator, API 35 x86_64
 
 Дата: 2026-08-02. Вход `stage_d_group_target.png` 1600×1100, три назначения
@@ -20,6 +50,11 @@ InSwapper session закрылась до первой GFPGAN session; макс�
 Потенциальный FFHQ ROI неназначенного T4 также передан compositor как глобальная
 no-write область. Полные числа:
 `docs/parity/android/api35-x86_64/checkpoint_1/checkpoint_1_results.json`.
+
+Журнал lifetime этой контрольной точки исторический: он получен до включения BiSeNet
+в swap-проход и не описывает текущую shared-session архитектуру. Актуальные пиковые
+пары приведены в контрольной точке 2 выше; identity margins ниже остаются неизменяемой
+базовой линией.
 
 | Baseline ArcFace margin | Сила `0` | Сила `0.8` | Сила `1.0` |
 | --- | ---: | ---: | ---: |
