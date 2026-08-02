@@ -1,0 +1,295 @@
+{
+  "fixture": "inputs\/stage_d_group_target.png",
+  "device_api": 35,
+  "backend": "CPU",
+  "configuration_difference": "FaceFusion desktop defaults to enhancing all detected faces; Android checkpoint enhances assigned targets only",
+  "baseline": {
+    "strength": 0,
+    "elapsed_ms": 147820,
+    "swap_rois": [
+      {
+        "left": 162,
+        "top": 209,
+        "right": 516,
+        "bottom": 563,
+        "target_id": "target-1",
+        "source_id": "source-1"
+      },
+      {
+        "left": 461,
+        "top": 239,
+        "right": 749,
+        "bottom": 527,
+        "target_id": "target-2",
+        "source_id": "source-2"
+      },
+      {
+        "left": 1002,
+        "top": 159,
+        "right": 1290,
+        "bottom": 447,
+        "target_id": "target-3",
+        "source_id": "source-3"
+      }
+    ],
+    "enhance_rois": [],
+    "protected_unassigned_rois": [],
+    "outside_union_changed_pixels": 0,
+    "t4_counterfactual_ffhq_roi": {
+      "left": 1062,
+      "top": 539,
+      "right": 1361,
+      "bottom": 838
+    },
+    "t4_changed_pixels": 0,
+    "identity": [
+      {
+        "target": 1,
+        "expected_source": 1,
+        "similarities": [
+          0.8133034829648371,
+          0.17741866426675085,
+          0.29231362754738693
+        ],
+        "rank": [
+          1,
+          3,
+          2
+        ],
+        "nearest_source": 1,
+        "expected_margin": 0.5209898554174501
+      },
+      {
+        "target": 2,
+        "expected_source": 2,
+        "similarities": [
+          0.16361089411741592,
+          0.8866545417447251,
+          0.07472894908167214
+        ],
+        "rank": [
+          2,
+          1,
+          3
+        ],
+        "nearest_source": 2,
+        "expected_margin": 0.7230436476273092
+      },
+      {
+        "target": 3,
+        "expected_source": 3,
+        "similarities": [
+          0.2650362462233055,
+          0.05661380756461112,
+          0.865945452187486
+        ],
+        "rank": [
+          3,
+          1,
+          2
+        ],
+        "nearest_source": 3,
+        "expected_margin": 0.6009092059641805
+      }
+    ]
+  },
+  "restored": {
+    "strength": 0.800000011920929,
+    "elapsed_ms": 311842,
+    "swap_rois": [
+      {
+        "left": 162,
+        "top": 209,
+        "right": 516,
+        "bottom": 563,
+        "target_id": "target-1",
+        "source_id": "source-1"
+      },
+      {
+        "left": 461,
+        "top": 239,
+        "right": 749,
+        "bottom": 527,
+        "target_id": "target-2",
+        "source_id": "source-2"
+      },
+      {
+        "left": 1002,
+        "top": 159,
+        "right": 1290,
+        "bottom": 447,
+        "target_id": "target-3",
+        "source_id": "source-3"
+      }
+    ],
+    "enhance_rois": [
+      {
+        "left": 131,
+        "top": 160,
+        "right": 546,
+        "bottom": 574,
+        "target_id": "target-1",
+        "source_id": "source-1"
+      },
+      {
+        "left": 434,
+        "top": 198,
+        "right": 774,
+        "bottom": 537,
+        "target_id": "target-2",
+        "source_id": "source-2"
+      },
+      {
+        "left": 975,
+        "top": 121,
+        "right": 1312,
+        "bottom": 458,
+        "target_id": "target-3",
+        "source_id": "source-3"
+      }
+    ],
+    "protected_unassigned_rois": [
+      {
+        "left": 1062,
+        "top": 539,
+        "right": 1361,
+        "bottom": 838
+      }
+    ],
+    "outside_union_changed_pixels": 0,
+    "t4_counterfactual_ffhq_roi": {
+      "left": 1062,
+      "top": 539,
+      "right": 1361,
+      "bottom": 838
+    },
+    "t4_changed_pixels": 0,
+    "identity": [
+      {
+        "target": 1,
+        "expected_source": 1,
+        "similarities": [
+          0.7832305435252662,
+          0.19648286150483177,
+          0.2976742671627752
+        ],
+        "rank": [
+          1,
+          3,
+          2
+        ],
+        "nearest_source": 1,
+        "expected_margin": 0.48555627636249105
+      },
+      {
+        "target": 2,
+        "expected_source": 2,
+        "similarities": [
+          0.182493094572839,
+          0.84774185708871,
+          0.09303555569954826
+        ],
+        "rank": [
+          2,
+          1,
+          3
+        ],
+        "nearest_source": 2,
+        "expected_margin": 0.665248762515871
+      },
+      {
+        "target": 3,
+        "expected_source": 3,
+        "similarities": [
+          0.2806375960181632,
+          0.08645150872006,
+          0.8070626072183495
+        ],
+        "rank": [
+          3,
+          1,
+          2
+        ],
+        "nearest_source": 3,
+        "expected_margin": 0.5264250112001864
+      }
+    ]
+  },
+  "identity_deltas": [
+    {
+      "target": 1,
+      "expected_similarity_delta": -0.0300729394395709,
+      "margin_delta": -0.035433579054959086,
+      "nearest_changed": false
+    },
+    {
+      "target": 2,
+      "expected_similarity_delta": -0.03891268465601516,
+      "margin_delta": -0.057794885111438266,
+      "nearest_changed": false
+    },
+    {
+      "target": 3,
+      "expected_similarity_delta": -0.05888284496913643,
+      "margin_delta": -0.07448419476399415,
+      "nearest_changed": false
+    }
+  ],
+  "baseline_session_events": [
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx"
+  ],
+  "restored_session_events": [
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:yoloface_8n.onnx",
+    "close:yoloface_8n.onnx",
+    "open:arcface_w600k_r50.onnx",
+    "close:arcface_w600k_r50.onnx",
+    "open:inswapper_128_fp16.onnx",
+    "close:inswapper_128_fp16.onnx",
+    "open:gfpgan_1.4.onnx",
+    "close:gfpgan_1.4.onnx",
+    "open:bisenet_resnet_34.onnx",
+    "close:bisenet_resnet_34.onnx",
+    "open:gfpgan_1.4.onnx",
+    "close:gfpgan_1.4.onnx",
+    "open:bisenet_resnet_34.onnx",
+    "close:bisenet_resnet_34.onnx",
+    "open:gfpgan_1.4.onnx",
+    "close:gfpgan_1.4.onnx",
+    "open:bisenet_resnet_34.onnx",
+    "close:bisenet_resnet_34.onnx"
+  ],
+  "max_simultaneous_heavy_sessions": 1
+}

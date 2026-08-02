@@ -13,6 +13,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -111,7 +112,6 @@ class ModelStore(
 ) {
     private val modelDirectory = File(context.filesDir, MODEL_DIRECTORY_NAME)
     private val operationMutex = Mutex()
-    private val verifiedThisProcess = mutableSetOf<ModelId>()
     private val mutableStatuses = MutableStateFlow(initialStatuses())
 
     val statuses: StateFlow<Map<ModelId, ModelStatus>> = mutableStatuses.asStateFlow()
@@ -196,6 +196,7 @@ class ModelStore(
             }
 
             try {
+                invalidateProcessVerification(destination)
                 installAtomically(partFile, destination)
             } catch (_: AtomicMoveNotSupportedException) {
                 return failedResult(descriptor, ModelStoreFailure.ATOMIC_INSTALL_UNAVAILABLE)
@@ -204,7 +205,7 @@ class ModelStore(
             }
 
             setStatus(descriptor.id, ModelStatus.Ready(observation.sizeBytes))
-            verifiedThisProcess += descriptor.id
+            verifiedModelKeys += verificationKey(destination, observation.sizeBytes)
             ModelImportResult.Imported(descriptor.id, observation.sizeBytes)
         } catch (cancelled: CancellationException) {
             setStatus(
@@ -294,9 +295,11 @@ class ModelStore(
     private fun verifyStatusLocked(descriptor: ModelDescriptor): ModelStatus {
         val destination = modelFile(descriptor)
         if (!destination.isFile) {
+            invalidateProcessVerification(destination)
             return ModelStatus.Missing.also { setStatus(descriptor.id, it) }
         }
-        if (descriptor.id in verifiedThisProcess && destination.length() == descriptor.expectedSizeBytes) {
+        val expectedKey = verificationKey(destination, descriptor.expectedSizeBytes)
+        if (expectedKey in verifiedModelKeys && destination.length() == descriptor.expectedSizeBytes) {
             return ModelStatus.Ready(destination.length()).also { setStatus(descriptor.id, it) }
         }
 
@@ -319,9 +322,10 @@ class ModelStore(
             existingCopyRetained = true,
         )
         return if (details == null) {
-            verifiedThisProcess += descriptor.id
+            verifiedModelKeys += verificationKey(destination, observation.sizeBytes)
             ModelStatus.Ready(observation.sizeBytes)
         } else {
+            invalidateProcessVerification(destination)
             ModelStatus.Invalid(details)
         }.also { setStatus(descriptor.id, it) }
     }
@@ -341,6 +345,14 @@ class ModelStore(
     private fun modelFile(descriptor: ModelDescriptor): File =
         File(modelDirectory, descriptor.fileName)
 
+    private fun verificationKey(file: File, sizeBytes: Long): String =
+        "${file.absoluteFile.toPath().normalize()}|$sizeBytes"
+
+    private fun invalidateProcessVerification(file: File) {
+        val pathPrefix = "${file.absoluteFile.toPath().normalize()}|"
+        verifiedModelKeys.removeIf { key -> key.startsWith(pathPrefix) }
+    }
+
     private fun ensureModelDirectory(): Boolean =
         modelDirectory.isDirectory || modelDirectory.mkdirs()
 
@@ -355,6 +367,7 @@ class ModelStore(
     private companion object {
         const val MODEL_DIRECTORY_NAME = "models"
         const val PART_FILE_SUFFIX = ".part"
+        val verifiedModelKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
     }
 }
 

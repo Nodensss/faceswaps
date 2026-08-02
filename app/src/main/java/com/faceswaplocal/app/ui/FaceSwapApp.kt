@@ -261,7 +261,7 @@ private fun ModelSetupCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "Локальные модели · этап C",
+                text = "Локальные модели · фото-пайплайн",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
@@ -279,7 +279,7 @@ private fun ModelSetupCard(
             }
 
             Text(
-                text = "Рабочий swapper этапа C: InSwapper fp16 · 128×128. HyperSwap не участвует в этом этапе.",
+                text = "Рабочий swapper: InSwapper fp16 · 128×128. GFPGAN и BiSeNet используются проходом восстановления; настройка силы появится в следующем UI-срезе E2.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -340,6 +340,8 @@ private fun modelDisplayName(id: ModelId): String = when (id) {
     ModelId.ARCFACE_W600K_R50 -> "ArcFace w600k_r50 · embedding"
     ModelId.HYPERSWAP_1A_256 -> "HyperSwap 1a · основной кандидат"
     ModelId.INSWAPPER_128_FP16 -> "InSwapper 128 fp16 · активный fallback"
+    ModelId.GFPGAN_1_4 -> "GFPGAN 1.4 · восстановление деталей"
+    ModelId.BISENET_RESNET_34 -> "BiSeNet ResNet-34 · маска лица"
 }
 
 private fun modelStatusText(status: ModelStatus): String = when (status) {

@@ -408,3 +408,76 @@ adb shell am instrument -w -r `
 sampler. Визуально кропы неразличимы. Полные matrices и hashes сохранены в
 `android/api35-x86_64/face_quality/face_quality_geometry_results.json`, Android PNG —
 в `android/api35-x86_64/face_quality/android_ffhq_512_crop.png`.
+
+## E1, контрольная точка 1: two-pass coordinator и ArcFace identity
+
+### Проверяемая конфигурация
+
+Контрольная точка использует групповой fixture `inputs/stage_d_group_target.png`:
+T1←source 1, T2←source 2, T3←source 3, T4=`Не менять`. На Android выполнены два
+полных прогона одного production coordinator:
+
+1. сила восстановления `0`: только три последовательных swap;
+2. сила `0.8`: те же три swap, затем восстановление только T1/T2/T3.
+
+FaceFusion desktop по умолчанию улучшает все найденные лица. Здесь это намеренно не
+повторяется: требование приложения сильнее, и pass enhancer перечисляет только успешно
+заменённые назначения. Поэтому group-frame не сравнивается с default-конфигурацией
+FaceFusion как byte/SSIM golden; raw GFPGAN/BiSeNet parity и `ffhq_512` geometry уже
+доказаны предыдущими независимыми барьерами.
+
+```powershell
+adb shell am instrument -w -r `
+  -e class com.faceswaplocal.app.inference.StageETwoPassCoordinatorInstrumentedTest `
+  com.faceswaplocal.app.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Фактический прогон: AVD API 35 x86_64, ONNX Runtime Android 1.26.0, CPU,
+`airplane_mode_on=1`; `OK (1 test)`, 507,194 с. Coordinator-время: 147 820 мс без
+restoration и 311 842 мс при силе 0.8.
+
+### Lifetime и пространственные инварианты
+
+Реальный listener записывал событие `close` только после вызова `OrtSession.close()`.
+В прогоне 0.8 все три `close:inswapper_128_fp16.onnx` завершились до первого
+`open:gfpgan_1.4.onnx`; затем для T1/T2/T3 шли последовательные пары GFPGAN→BiSeNet.
+Максимум одновременно открытых среди InSwapper/GFPGAN/BiSeNet — `1`. При силе 0
+GFPGAN и BiSeNet не проверялись и не открывались.
+
+Чтобы nearby-незаменяемое лицо нельзя было затронуть даже при пересечении кропов,
+координатор вычисляет полный потенциальный `ffhq_512` ROI каждого неназначенного
+detected face и передаёт его compositor как глобальную no-write область. В этом прогоне
+T4 ROI `[1062,539,1361,838)` явно присутствует в `protected_unassigned_rois`.
+
+| Инвариант | Сила 0 | Сила 0.8 |
+| --- | ---: | ---: |
+| Изменено пикселей вне `union(swap ROI, enhance ROI)` | 0 | 0 |
+| Изменено пикселей в полном потенциальном `ffhq_512` ROI T4 | 0 | 0 |
+| Enhance target IDs | — | T1, T2, T3 |
+
+### ArcFace identity
+
+Для сравнения использованы исходные пять landmarks целевого кадра; финальные лица не
+редетектировались, поэтому detector drift не влияет на результат. Значения — cosine
+между ArcFace target embedding и тремя source embeddings:
+
+| Target / сила | Source 1 | Source 2 | Source 3 | Ближайший | Margin ожидаемого source |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| T1 / `0` | 0.813303 | 0.177419 | 0.292314 | S1 | 0.520990 |
+| T1 / `0.8` | 0.783231 | 0.196483 | 0.297674 | S1 | 0.485556 |
+| T2 / `0` | 0.163611 | 0.886655 | 0.074729 | S2 | 0.723044 |
+| T2 / `0.8` | 0.182493 | 0.847742 | 0.093036 | S2 | 0.665249 |
+| T3 / `0` | 0.265036 | 0.056614 | 0.865945 | S3 | 0.600909 |
+| T3 / `0.8` | 0.280638 | 0.086452 | 0.807063 | S3 | 0.526425 |
+
+GFPGAN снизил абсолютное сходство с ожидаемым source на `0.030073`, `0.038913` и
+`0.058883`, но ни для одной цели не изменил ближайший source или полный порядок
+ранжирования. Условие снижения дефолтной силы не сработало: `0.8` остаётся допустимым
+кандидатом для E2.
+
+Артефакты:
+
+- `android/api35-x86_64/checkpoint_1/checkpoint_1_results.json` — полные ROI, матрицы
+  сходства, delta и open/close events;
+- `android/api35-x86_64/checkpoint_1/strength_0.png` — baseline;
+- `android/api35-x86_64/checkpoint_1/strength_0_8.png` — результат восстановления.

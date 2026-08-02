@@ -1,5 +1,25 @@
 # Benchmarks FaceSwapLocal
 
+## E1, контрольная точка 1: two-pass coordinator, API 35 x86_64
+
+Дата: 2026-08-02. Вход `stage_d_group_target.png` 1600×1100, три назначения
+InSwapper (T1/T2/T3), T4 — `Не менять`. ONNX Runtime Android 1.26.0, CPU,
+`airplane_mode_on=1`.
+
+| Прогон | Состав | Время coordinator | Пространственные инварианты |
+| --- | --- | ---: | --- |
+| Сила `0` | 3 swap, GFPGAN/BiSeNet не открывались | 147 820 ms | вне union ROI: 0; T4: 0 изменений |
+| Сила `0.8` | 3 swap, затем 3× GFPGAN + 3× BiSeNet | 311 842 ms | вне union(swap, enhance) ROI: 0; T4: 0 изменений |
+
+Полный instrumentation runner с подготовкой и шестью финальными ArcFace embeddings:
+507,194 с, `OK (1 test)`. Журнал реальных open/close событий подтвердил, что последняя
+InSwapper session закрылась до первой GFPGAN session; максимум одновременно открытых
+среди InSwapper/GFPGAN/BiSeNet — `1`. Ожидаемый source остался ближайшим для T1/T2/T3
+при обеих силах. Peak heap и thermal не измерялись; AVD не является reference device.
+Потенциальный FFHQ ROI неназначенного T4 также передан compositor как глобальная
+no-write область. Полные числа:
+`docs/parity/android/api35-x86_64/checkpoint_1/checkpoint_1_results.json`.
+
 ## Этап D: multi-face fixture, API 35 x86_64
 
 Дата: 2026-07-23. Вход `stage_d_group_target.png`: 1600×1100, четыре

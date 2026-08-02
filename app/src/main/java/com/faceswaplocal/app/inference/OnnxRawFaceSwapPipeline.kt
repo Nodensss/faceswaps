@@ -51,6 +51,12 @@ data class DetectedFace5(
     val landmarks: List<Point2>,
 )
 
+/** Task-local ArcFace result. Callers must clear [embedding] when their audit is done. */
+data class FaceIdentityEmbedding(
+    val embedding: FloatArray,
+    val backend: InferenceBackend,
+)
+
 data class RawFaceSwapRequest(
     val source: Bitmap,
     val target: Bitmap,
@@ -107,6 +113,8 @@ class OnnxRawFaceSwapPipeline(
     private val modelStore: ModelStore,
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment(),
+    private val sessionLifecycle: InferenceSessionLifecycleListener =
+        NoOpInferenceSessionLifecycleListener,
 ) {
     suspend fun detectFaces(
         bitmap: Bitmap,
@@ -116,8 +124,56 @@ class OnnxRawFaceSwapPipeline(
         runWithBackendFallback(detectorFile, backend) { session -> detect(session, bitmap) }
     }
 
-    suspend fun process(request: RawFaceSwapRequest): RawFaceSwapResult =
-        withContext(workerDispatcher) {
+    /**
+     * Extracts ArcFace identity for a face whose five landmarks were already resolved.
+     * This avoids redetecting swapped/restored frames during parity and keeps detector
+     * drift out of the identity comparison.
+     */
+    suspend fun extractIdentityEmbedding(
+        bitmap: Bitmap,
+        face: DetectedFace5,
+        backend: RequestedInferenceBackend,
+    ): FaceIdentityEmbedding {
+        var undeliveredEmbedding: FloatArray? = null
+        try {
+            val result = withContext(workerDispatcher) {
+                coroutineContext.ensureActive()
+                val matrix = FaceGeometry.estimateSimilarity(
+                    source = face.landmarks,
+                    template = WarpTemplate.ARCFACE_112_V2,
+                    cropWidth = RECOGNIZER_SIZE,
+                    cropHeight = RECOGNIZER_SIZE,
+                )
+                val aligned = BitmapSampling.warpAffine(
+                    source = bitmap,
+                    sourceToDestination = matrix,
+                    destinationWidth = RECOGNIZER_SIZE,
+                    destinationHeight = RECOGNIZER_SIZE,
+                )
+                try {
+                    val recognizerFile = modelStore.requireVerifiedModel(ModelId.ARCFACE_W600K_R50)
+                    val (embedding, actualBackend) = runWithBackendFallback(
+                        recognizerFile,
+                        backend,
+                    ) { session -> recognize(session, aligned) }
+                    FaceIdentityEmbedding(embedding, actualBackend).also {
+                        undeliveredEmbedding = embedding
+                    }
+                } finally {
+                    if (!aligned.isRecycled) aligned.recycle()
+                }
+            }
+            undeliveredEmbedding = null
+            return result
+        } finally {
+            undeliveredEmbedding?.fill(0f)
+        }
+    }
+
+    suspend fun process(request: RawFaceSwapRequest): RawFaceSwapResult {
+        var undeliveredResult: RawFaceSwapResult? = null
+        try {
+            val result = withContext(workerDispatcher) {
             val totalStarted = elapsedRealtimeMs()
             coroutineContext.ensureActive()
 
@@ -152,12 +208,18 @@ class OnnxRawFaceSwapPipeline(
                 destinationHeight = RECOGNIZER_SIZE,
             )
             var alignedTargetForCleanup: Bitmap? = null
+            var rawBitmapForCleanup: Bitmap? = null
+            var ownedRecognizerEmbedding: FloatArray? = null
+            var convertedEmbedding: FloatArray? = null
+            var swapperOutputForCleanup: SwapperOutput? = null
+            var resultEmbeddingForCleanup: FloatArray? = null
             var ownershipTransferred = false
             try {
                 val recognizerStarted = elapsedRealtimeMs()
                 val (embedding, recognizerBackend) = request.cachedSourceEmbedding?.let { it to InferenceBackend.CPU } ?: run {
                     val recognizerFile = modelStore.requireVerifiedModel(ModelId.ARCFACE_W600K_R50)
                     runWithBackendFallback(recognizerFile, request.backend) { session -> recognize(session, alignedSource) }
+                        .also { result -> ownedRecognizerEmbedding = result.first }
                 }
                 val recognizerMs = elapsedRealtimeMs() - recognizerStarted
 
@@ -186,17 +248,25 @@ class OnnxRawFaceSwapPipeline(
                             initializerName = INSWAPPER_EMAP_NAME,
                             expectedDimensions = longArrayOf(EMBEDDING_SIZE.toLong(), EMBEDDING_SIZE.toLong()),
                         )
-                        convertInSwapperEmbedding(embedding, emap)
+                        try {
+                            convertInSwapperEmbedding(embedding, emap)
+                        } finally {
+                            emap.fill(0f)
+                        }
                     }
-                }
+                }.also { convertedEmbedding = it }
                 coroutineContext.ensureActive()
                 val (swapperOutput, swapperBackend) = runWithBackendFallback(
                     modelFile = swapperFile,
                     requestedBackend = request.backend,
                 ) { session -> runSwapper(session, request.swapper, sourceEmbedding, alignedTarget) }
+                swapperOutputForCleanup = swapperOutput
                 val swapperMs = elapsedRealtimeMs() - swapperStarted
 
                 val rawBitmap = rawOutputToBitmap(swapperOutput.output, request.swapper)
+                rawBitmapForCleanup = rawBitmap
+                val resultEmbedding = embedding.copyOf()
+                resultEmbeddingForCleanup = resultEmbedding
                 RawFaceSwapResult(
                     swapper = request.swapper,
                     sourceFace = sourceFace,
@@ -208,7 +278,7 @@ class OnnxRawFaceSwapPipeline(
                     rawOutput = swapperOutput.output,
                     rawMask = swapperOutput.mask,
                     rawOutputBitmap = rawBitmap,
-                    sourceEmbedding = embedding.copyOf(),
+                    sourceEmbedding = resultEmbedding,
                     detectorBackend = detectorBackend,
                     recognizerBackend = recognizerBackend,
                     swapperBackend = swapperBackend,
@@ -218,46 +288,74 @@ class OnnxRawFaceSwapPipeline(
                         swapperMs = swapperMs,
                         totalMs = elapsedRealtimeMs() - totalStarted,
                     ),
-                ).also { ownershipTransferred = true }
+                ).also {
+                    ownershipTransferred = true
+                    rawBitmapForCleanup = null
+                    swapperOutputForCleanup = null
+                    resultEmbeddingForCleanup = null
+                    undeliveredResult = it
+                }
             } finally {
+                ownedRecognizerEmbedding?.fill(0f)
+                convertedEmbedding?.fill(0f)
                 if (!ownershipTransferred) {
                     alignedSource.recycle()
                     alignedTargetForCleanup?.recycle()
+                    rawBitmapForCleanup?.recycle()
+                    swapperOutputForCleanup?.output?.fill(0f)
+                    swapperOutputForCleanup?.mask?.fill(0f)
+                    resultEmbeddingForCleanup?.fill(0f)
                 }
             }
+            }
+            undeliveredResult = null
+            return result
+        } finally {
+            undeliveredResult?.releaseAllResources()
         }
+    }
 
     private fun detect(session: OrtSession, bitmap: Bitmap): List<DetectedFace5> {
         val detectorInput = BitmapSampling.detectorInput(bitmap, DETECTOR_SIZE)
-        OnnxTensor.createTensor(
-            environment,
-            FloatBuffer.wrap(detectorInput),
-            longArrayOf(1, 3, DETECTOR_SIZE.toLong(), DETECTOR_SIZE.toLong()),
-        ).use { input ->
-            session.run(mapOf(DETECTOR_INPUT_NAME to input)).use { result ->
-                val output = copyFloatTensor(result[0])
-                require(output.size == DETECTOR_CHANNELS * DETECTOR_CANDIDATES) {
-                    "Unexpected yoloface output element count: ${output.size}"
+        var output: FloatArray? = null
+        try {
+            OnnxTensor.createTensor(
+                environment,
+                FloatBuffer.wrap(detectorInput),
+                longArrayOf(1, 3, DETECTOR_SIZE.toLong(), DETECTOR_SIZE.toLong()),
+            ).use { input ->
+                session.run(mapOf(DETECTOR_INPUT_NAME to input)).use { result ->
+                    output = copyFloatTensor(result[0])
+                    require(requireNotNull(output).size == DETECTOR_CHANNELS * DETECTOR_CANDIDATES) {
+                        "Unexpected yoloface output element count: ${requireNotNull(output).size}"
+                    }
+                    return decodeYoloFace(requireNotNull(output), bitmap.width, bitmap.height)
                 }
-                return decodeYoloFace(output, bitmap.width, bitmap.height)
             }
+        } finally {
+            detectorInput.fill(0f)
+            output?.fill(0f)
         }
     }
 
     private fun recognize(session: OrtSession, alignedSource: Bitmap): FloatArray {
         val inputData = BitmapSampling.rgbTensor(alignedSource, mean = 0.5f, standardDeviation = 0.5f)
-        OnnxTensor.createTensor(
-            environment,
-            FloatBuffer.wrap(inputData),
-            longArrayOf(1, 3, RECOGNIZER_SIZE.toLong(), RECOGNIZER_SIZE.toLong()),
-        ).use { input ->
-            session.run(mapOf(RECOGNIZER_INPUT_NAME to input)).use { result ->
-                return copyFloatTensor(result[0]).also { embedding ->
-                    require(embedding.size == EMBEDDING_SIZE) {
-                        "Unexpected ArcFace embedding size: ${embedding.size}"
+        try {
+            OnnxTensor.createTensor(
+                environment,
+                FloatBuffer.wrap(inputData),
+                longArrayOf(1, 3, RECOGNIZER_SIZE.toLong(), RECOGNIZER_SIZE.toLong()),
+            ).use { input ->
+                session.run(mapOf(RECOGNIZER_INPUT_NAME to input)).use { result ->
+                    return copyFloatTensor(result[0]).also { embedding ->
+                        require(embedding.size == EMBEDDING_SIZE) {
+                            "Unexpected ArcFace embedding size: ${embedding.size}"
+                        }
                     }
                 }
             }
+        } finally {
+            inputData.fill(0f)
         }
     }
 
@@ -272,37 +370,41 @@ class OnnxRawFaceSwapPipeline(
             SwapperModel.INSWAPPER_128_FP16 -> 0f to 1f
         }
         val targetData = BitmapSampling.rgbTensor(alignedTarget, mean, standardDeviation)
-        OnnxTensor.createTensor(
-            environment,
-            FloatBuffer.wrap(sourceEmbedding),
-            longArrayOf(1, EMBEDDING_SIZE.toLong()),
-        ).use { sourceTensor ->
+        try {
             OnnxTensor.createTensor(
                 environment,
-                FloatBuffer.wrap(targetData),
-                longArrayOf(1, 3, swapper.cropSize.toLong(), swapper.cropSize.toLong()),
-            ).use { targetTensor ->
-                session.run(
-                    mapOf(
-                        SWAPPER_SOURCE_INPUT_NAME to sourceTensor,
-                        SWAPPER_TARGET_INPUT_NAME to targetTensor,
-                    ),
-                ).use { result ->
-                    val output = copyFloatTensor(
-                        result[SWAPPER_OUTPUT_NAME].orElseThrow {
-                            IllegalStateException("Swapper has no '$SWAPPER_OUTPUT_NAME' output")
-                        },
-                    )
-                    val expectedOutputSize = 3 * swapper.cropSize * swapper.cropSize
-                    require(output.size == expectedOutputSize) {
-                        "Unexpected swapper output element count: ${output.size}"
+                FloatBuffer.wrap(sourceEmbedding),
+                longArrayOf(1, EMBEDDING_SIZE.toLong()),
+            ).use { sourceTensor ->
+                OnnxTensor.createTensor(
+                    environment,
+                    FloatBuffer.wrap(targetData),
+                    longArrayOf(1, 3, swapper.cropSize.toLong(), swapper.cropSize.toLong()),
+                ).use { targetTensor ->
+                    session.run(
+                        mapOf(
+                            SWAPPER_SOURCE_INPUT_NAME to sourceTensor,
+                            SWAPPER_TARGET_INPUT_NAME to targetTensor,
+                        ),
+                    ).use { result ->
+                        val output = copyFloatTensor(
+                            result[SWAPPER_OUTPUT_NAME].orElseThrow {
+                                IllegalStateException("Swapper has no '$SWAPPER_OUTPUT_NAME' output")
+                            },
+                        )
+                        val expectedOutputSize = 3 * swapper.cropSize * swapper.cropSize
+                        require(output.size == expectedOutputSize) {
+                            "Unexpected swapper output element count: ${output.size}"
+                        }
+                        val mask = result[SWAPPER_MASK_OUTPUT_NAME]
+                            .map(::copyFloatTensor)
+                            .orElse(null)
+                        return SwapperOutput(output, mask)
                     }
-                    val mask = result[SWAPPER_MASK_OUTPUT_NAME]
-                        .map(::copyFloatTensor)
-                        .orElse(null)
-                    return SwapperOutput(output, mask)
                 }
             }
+        } finally {
+            targetData.fill(0f)
         }
     }
 
@@ -397,21 +499,25 @@ class OnnxRawFaceSwapPipeline(
         val size = swapper.cropSize
         val planeSize = size * size
         val pixels = IntArray(planeSize)
-        for (index in 0 until planeSize) {
-            fun visualValue(channel: Int): Int {
-                val raw = output[channel * planeSize + index]
-                val normalized = when (swapper) {
-                    SwapperModel.HYPERSWAP_1A_256 -> raw * 0.5f + 0.5f
-                    SwapperModel.INSWAPPER_128_FP16 -> raw
+        try {
+            for (index in 0 until planeSize) {
+                fun visualValue(channel: Int): Int {
+                    val raw = output[channel * planeSize + index]
+                    val normalized = when (swapper) {
+                        SwapperModel.HYPERSWAP_1A_256 -> raw * 0.5f + 0.5f
+                        SwapperModel.INSWAPPER_128_FP16 -> raw
+                    }
+                    return (normalized.coerceIn(0f, 1f) * 255f).toInt()
                 }
-                return (normalized.coerceIn(0f, 1f) * 255f).toInt()
+                val red = visualValue(0)
+                val green = visualValue(1)
+                val blue = visualValue(2)
+                pixels[index] = (0xff shl 24) or (red shl 16) or (green shl 8) or blue
             }
-            val red = visualValue(0)
-            val green = visualValue(1)
-            val blue = visualValue(2)
-            pixels[index] = (0xff shl 24) or (red shl 16) or (green shl 8) or blue
+            return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
+        } finally {
+            pixels.fill(0)
         }
-        return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
     }
 
     private fun copyFloatTensor(value: ai.onnxruntime.OnnxValue): FloatArray {
@@ -446,8 +552,20 @@ class OnnxRawFaceSwapPipeline(
         operation: (OrtSession) -> T,
     ): T {
         createSessionOptions(kind).use { options ->
-            environment.createSession(modelFile.absolutePath, options).use { session ->
+            val session = environment.createSession(modelFile.absolutePath, options)
+            var openedEventSent = false
+            try {
+                sessionLifecycle.onSessionOpened(modelFile.name)
+                openedEventSent = true
                 return operation(session)
+            } finally {
+                try {
+                    session.close()
+                } finally {
+                    if (openedEventSent) {
+                        sessionLifecycle.onSessionClosed(modelFile.name)
+                    }
+                }
             }
         }
     }
@@ -481,6 +599,15 @@ class OnnxRawFaceSwapPipeline(
 
     private fun inferenceThreadCount(): Int =
         (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, MAX_INFERENCE_THREADS)
+
+    private fun RawFaceSwapResult.releaseAllResources() {
+        if (!alignedSource112.isRecycled) alignedSource112.recycle()
+        if (!alignedTarget.isRecycled) alignedTarget.recycle()
+        if (!rawOutputBitmap.isRecycled) rawOutputBitmap.recycle()
+        rawOutput.fill(0f)
+        rawMask?.fill(0f)
+        sourceEmbedding.fill(0f)
+    }
 
     private data class SwapperOutput(
         val output: FloatArray,
@@ -554,28 +681,32 @@ internal fun faceBoxIntersectionOverUnion(first: FaceBox, second: FaceBox): Doub
 internal object BitmapSampling {
     fun detectorInput(bitmap: Bitmap, detectorSize: Int): FloatArray {
         val source = PixelSource(bitmap)
-        val scale = min(
-            detectorSize.toDouble() / source.height.toDouble(),
-            detectorSize.toDouble() / source.width.toDouble(),
-        ).coerceAtMost(1.0)
-        val resizedWidth = max(1, (source.width * scale).toInt())
-        val resizedHeight = max(1, (source.height * scale).toInt())
-        val planeSize = detectorSize * detectorSize
-        val output = FloatArray(3 * planeSize)
+        try {
+            val scale = min(
+                detectorSize.toDouble() / source.height.toDouble(),
+                detectorSize.toDouble() / source.width.toDouble(),
+            ).coerceAtMost(1.0)
+            val resizedWidth = max(1, (source.width * scale).toInt())
+            val resizedHeight = max(1, (source.height * scale).toInt())
+            val planeSize = detectorSize * detectorSize
+            val output = FloatArray(3 * planeSize)
 
-        for (destinationY in 0 until resizedHeight) {
-            val sourceY = (destinationY + 0.5) * source.height / resizedHeight - 0.5
-            for (destinationX in 0 until resizedWidth) {
-                val sourceX = (destinationX + 0.5) * source.width / resizedWidth - 0.5
-                val color = source.sample(sourceX, sourceY)
-                val index = destinationY * detectorSize + destinationX
-                // FaceFusion receives OpenCV BGR and transposes it to NCHW.
-                output[index] = color.blue / 255f
-                output[planeSize + index] = color.green / 255f
-                output[2 * planeSize + index] = color.red / 255f
+            for (destinationY in 0 until resizedHeight) {
+                val sourceY = (destinationY + 0.5) * source.height / resizedHeight - 0.5
+                for (destinationX in 0 until resizedWidth) {
+                    val sourceX = (destinationX + 0.5) * source.width / resizedWidth - 0.5
+                    val color = source.sample(sourceX, sourceY)
+                    val index = destinationY * detectorSize + destinationX
+                    // FaceFusion receives OpenCV BGR and transposes it to NCHW.
+                    output[index] = color.blue / 255f
+                    output[planeSize + index] = color.green / 255f
+                    output[2 * planeSize + index] = color.red / 255f
+                }
             }
+            return output
+        } finally {
+            source.clear()
         }
-        return output
     }
 
     fun rgbTensor(
@@ -586,17 +717,21 @@ internal object BitmapSampling {
         require(standardDeviation != 0f)
         val pixels = IntArray(bitmap.width * bitmap.height)
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        val planeSize = pixels.size
-        val output = FloatArray(3 * planeSize)
-        pixels.forEachIndexed { index, pixel ->
-            val red = ((pixel ushr 16) and 0xff) / 255f
-            val green = ((pixel ushr 8) and 0xff) / 255f
-            val blue = (pixel and 0xff) / 255f
-            output[index] = (red - mean) / standardDeviation
-            output[planeSize + index] = (green - mean) / standardDeviation
-            output[2 * planeSize + index] = (blue - mean) / standardDeviation
+        try {
+            val planeSize = pixels.size
+            val output = FloatArray(3 * planeSize)
+            pixels.forEachIndexed { index, pixel ->
+                val red = ((pixel ushr 16) and 0xff) / 255f
+                val green = ((pixel ushr 8) and 0xff) / 255f
+                val blue = (pixel and 0xff) / 255f
+                output[index] = (red - mean) / standardDeviation
+                output[planeSize + index] = (green - mean) / standardDeviation
+                output[2 * planeSize + index] = (blue - mean) / standardDeviation
+            }
+            return output
+        } finally {
+            pixels.fill(0)
         }
-        return output
     }
 
     fun warpAffine(
@@ -605,13 +740,39 @@ internal object BitmapSampling {
         destinationWidth: Int,
         destinationHeight: Int,
     ): Bitmap {
-        val sourcePixels = PixelSource(source)
+        val sourcePixels = IntArray(source.width * source.height).also { pixels ->
+            source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        }
+        try {
+            return warpAffine(
+                sourcePixels = sourcePixels,
+                sourceWidth = source.width,
+                sourceHeight = source.height,
+                sourceToDestination = sourceToDestination,
+                destinationWidth = destinationWidth,
+                destinationHeight = destinationHeight,
+            )
+        } finally {
+            sourcePixels.fill(0)
+        }
+    }
+
+    /** Warps an existing packed pixel buffer without allocating another full-size Bitmap. */
+    fun warpAffine(
+        sourcePixels: IntArray,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        sourceToDestination: AffineMatrix,
+        destinationWidth: Int,
+        destinationHeight: Int,
+    ): Bitmap {
+        val source = PixelSource(sourcePixels, sourceWidth, sourceHeight)
         val destinationToSource = sourceToDestination.inverse()
         val output = IntArray(destinationWidth * destinationHeight)
         for (y in 0 until destinationHeight) {
             for (x in 0 until destinationWidth) {
                 val sourcePoint = destinationToSource.map(Point2(x.toDouble(), y.toDouble()))
-                val color = sourcePixels.sample(sourcePoint.x, sourcePoint.y)
+                val color = source.sample(sourcePoint.x, sourcePoint.y)
                 output[y * destinationWidth + x] =
                     (0xff shl 24) or
                         (color.red.toInt().coerceIn(0, 255) shl 16) or
@@ -619,14 +780,39 @@ internal object BitmapSampling {
                         color.blue.toInt().coerceIn(0, 255)
             }
         }
-        return Bitmap.createBitmap(output, destinationWidth, destinationHeight, Bitmap.Config.ARGB_8888)
+        try {
+            return Bitmap.createBitmap(output, destinationWidth, destinationHeight, Bitmap.Config.ARGB_8888)
+        } finally {
+            output.fill(0)
+        }
     }
 
-    private class PixelSource(bitmap: Bitmap) {
-        val width: Int = bitmap.width
-        val height: Int = bitmap.height
-        private val pixels = IntArray(width * height).also { destination ->
-            bitmap.getPixels(destination, 0, width, 0, 0, width, height)
+    private class PixelSource(
+        private val pixels: IntArray,
+        val width: Int,
+        val height: Int,
+    ) {
+        constructor(bitmap: Bitmap) : this(
+            pixels = IntArray(bitmap.width * bitmap.height).also { destination ->
+                bitmap.getPixels(
+                    destination,
+                    0,
+                    bitmap.width,
+                    0,
+                    0,
+                    bitmap.width,
+                    bitmap.height,
+                )
+            },
+            width = bitmap.width,
+            height = bitmap.height,
+        )
+
+        init {
+            require(width > 0 && height > 0 && width <= Int.MAX_VALUE / height)
+            require(pixels.size == width * height) {
+                "Source pixel count does not match source dimensions"
+            }
         }
 
         fun sample(x: Double, y: Double): RgbColor {
@@ -648,6 +834,10 @@ internal object BitmapSampling {
                 green = bilinear(topLeft ushr 8, topRight ushr 8, bottomLeft ushr 8, bottomRight ushr 8, fractionX, fractionY),
                 blue = bilinear(topLeft, topRight, bottomLeft, bottomRight, fractionX, fractionY),
             )
+        }
+
+        fun clear() {
+            pixels.fill(0)
         }
 
         private fun bilinear(

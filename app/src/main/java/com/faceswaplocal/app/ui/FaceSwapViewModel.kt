@@ -24,6 +24,7 @@ import com.faceswaplocal.app.inference.FaceBox
 import com.faceswaplocal.app.inference.OnnxPhotoFaceSwapPipeline
 import com.faceswaplocal.app.inference.OnnxRawFaceSwapPipeline
 import com.faceswaplocal.app.inference.OnnxMultiPhotoFaceSwapPipeline
+import com.faceswaplocal.app.inference.OnnxFaceEnhancerPipeline
 import com.faceswaplocal.app.inference.MultiPhotoAssignment
 import com.faceswaplocal.app.inference.MultiPhotoSource
 import com.faceswaplocal.app.inference.MultiPhotoTarget
@@ -95,9 +96,14 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
     private val bitmapLoader = BitmapLoader(application.contentResolver)
     private val faceDetector = MlKitLocalFaceDetector()
     private val modelStore = ModelStore(application)
-    private val photoSwapPipeline = OnnxPhotoFaceSwapPipeline(modelStore)
     private val rawPipeline = OnnxRawFaceSwapPipeline(modelStore)
-    private val multiPhotoSwapPipeline = OnnxMultiPhotoFaceSwapPipeline(rawPipeline, photoSwapPipeline)
+    private val photoSwapPipeline = OnnxPhotoFaceSwapPipeline(modelStore, rawPipeline = rawPipeline)
+    private val faceEnhancerPipeline = OnnxFaceEnhancerPipeline(modelStore)
+    private val multiPhotoSwapPipeline = OnnxMultiPhotoFaceSwapPipeline(
+        rawPipeline,
+        photoSwapPipeline,
+        faceEnhancerPipeline,
+    )
     private val mutableState = MutableStateFlow(FaceSwapUiState())
     private val mainHandler = Handler(Looper.getMainLooper())
     private var analysisJob: Job? = null
@@ -456,4 +462,3 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         super.onCleared()
     }
 }
-

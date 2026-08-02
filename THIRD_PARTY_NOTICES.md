@@ -186,9 +186,9 @@ developer staging в приватное хранилище.
   `arcface_w600k_r50`, `hyperswap_1a_256`, `inswapper_128_fp16`, `gfpgan_1.4` или
   `bisenet_resnet_34`.
 - Приложение не имеет `INTERNET` и не скачивает веса.
-- Product flow разрешает только явный picker-import. До его подключения parity-ядро
-  E1 принимает GFPGAN/BiSeNet только через developer staging в приватный каталог и
-  само проверяет размер и полный SHA-256 из `docs/MODEL_CARD.md`.
+- Product flow разрешает только явный picker-import; GFPGAN и BiSeNet входят в тот же
+  allowlist размера/SHA-256, что detector, embedder и swappers. Developer staging через
+  `adb` используется только для воспроизводимых parity-тестов приватного debug-каталога.
 - До получения однозначных условий ни один вес нельзя публиковать вместе с исходниками,
   APK или иным дистрибутивом FaceSwapLocal.
 

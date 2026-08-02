@@ -2,6 +2,7 @@ package com.faceswaplocal.app.inference
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -263,6 +264,95 @@ class FaceCompositorTest {
         assertEquals(CompositeRoi(0, 0, 0, 0), result.roi)
         assertArrayEquals(target, result.pixels)
         assertTrue(result.warpedMask.all { it == 0f })
+    }
+
+    @Test
+    fun `paste back supports arbitrary crop mask and preserves base alpha and inputs`() {
+        val base = IntArray(4) { argb(77 + it, 10, 20, 30) }
+        val crop = IntArray(4) { argb(255, 110, 120, 130) }
+        val mask = floatArrayOf(0f, 0.25f, 0.5f, 1f)
+        val baseBefore = base.copyOf()
+        val cropBefore = crop.copyOf()
+        val maskBefore = mask.copyOf()
+
+        val result = FaceCompositor.pasteBack(
+            basePixels = base,
+            baseWidth = 2,
+            baseHeight = 2,
+            cropPixels = crop,
+            cropMask = mask,
+            cropWidth = 2,
+            cropHeight = 2,
+            baseToCrop = IDENTITY,
+        )
+
+        assertEquals(CompositeRoi(0, 0, 2, 2), result.roi)
+        assertArrayEquals(mask, result.warpedMask, 0f)
+        assertArrayEquals(
+            intArrayOf(
+                argb(77, 10, 20, 30),
+                argb(78, 35, 45, 55),
+                argb(79, 60, 70, 80),
+                argb(80, 110, 120, 130),
+            ),
+            result.pixels,
+        )
+        assertArrayEquals(baseBefore, base)
+        assertArrayEquals(cropBefore, crop)
+        assertArrayEquals(maskBefore, mask, 0f)
+    }
+
+    @Test
+    fun `paste back leaves protected full-image roi bit identical`() {
+        val base = IntArray(16) { index -> argb(80 + index, 10, 20, 30) }
+        val crop = IntArray(16) { argb(255, 240, 230, 220) }
+        val protected = CompositeRoi(left = 1, top = 1, right = 3, bottom = 3)
+
+        val result = FaceCompositor.pasteBack(
+            basePixels = base,
+            baseWidth = 4,
+            baseHeight = 4,
+            cropPixels = crop,
+            cropMask = FloatArray(16) { 1f },
+            cropWidth = 4,
+            cropHeight = 4,
+            baseToCrop = IDENTITY,
+            protectedBaseRois = listOf(protected),
+        )
+
+        for (y in protected.top until protected.bottom) {
+            for (x in protected.left until protected.right) {
+                val pixel = index(x, y, 4)
+                assertEquals(base[pixel], result.pixels[pixel])
+                assertEquals(0f, result.warpedMask[pixel])
+            }
+        }
+        assertNotEquals(base[0], result.pixels[0])
+    }
+
+    @Test
+    fun `gaussian blur preserves a constant mask and is symmetric for an impulse`() {
+        val constant = FaceCompositor.gaussianBlurReflect101(
+            input = FloatArray(25) { 1f },
+            width = 5,
+            height = 5,
+            sigma = 1.0,
+        )
+        assertTrue(constant.all { kotlin.math.abs(it - 1f) <= 1e-6f })
+
+        val impulse = FloatArray(25).also { it[index(2, 2, 5)] = 1f }
+        val blurred = FaceCompositor.gaussianBlurReflect101(impulse, 5, 5, 1.0)
+
+        for (y in 0 until 5) {
+            for (x in 0 until 5) {
+                val value = blurred[index(x, y, 5)]
+                assertTrue(value in 0f..1f)
+                assertEquals(value, blurred[index(4 - x, y, 5)], 1e-7f)
+                assertEquals(value, blurred[index(x, 4 - y, 5)], 1e-7f)
+            }
+        }
+        assertTrue(blurred[index(2, 2, 5)] > blurred[index(1, 2, 5)])
+        assertTrue(blurred[index(1, 2, 5)] > blurred[index(0, 2, 5)])
     }
 
     @Test

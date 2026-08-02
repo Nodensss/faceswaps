@@ -34,6 +34,8 @@ data class PhotoFaceSwapTimings(
  */
 data class PhotoFaceSwapResult(
     val finalBitmap: Bitmap,
+    /** Five neural landmarks resolved once from the untouched target image. */
+    val targetFace: DetectedFace5,
     val targetToSwapperCrop: AffineMatrix,
     val cropMask: FloatArray,
     val pasteRoi: CompositeRoi,
@@ -59,6 +61,7 @@ class OnnxPhotoFaceSwapPipeline(
         // reference outside its block so a completed bitmap is still recycled if the
         // result is cancelled before ownership can be delivered to the caller.
         var undeliveredBitmap: Bitmap? = null
+        var undeliveredEmbedding: FloatArray? = null
         try {
             val result = withContext(workerDispatcher) {
                 val totalStarted = elapsedRealtimeMs()
@@ -74,6 +77,7 @@ class OnnxPhotoFaceSwapPipeline(
                         cachedSourceEmbedding = request.cachedSourceEmbedding,
                     ),
                 )
+                var embeddingTransferred = false
                 try {
                     coroutineContext.ensureActive()
                     val compositingStarted = elapsedRealtimeMs()
@@ -100,6 +104,7 @@ class OnnxPhotoFaceSwapPipeline(
                     val compositingMs = elapsedRealtimeMs() - compositingStarted
                     PhotoFaceSwapResult(
                         finalBitmap = resultBitmap,
+                        targetFace = raw.targetFace,
                         targetToSwapperCrop = raw.targetToSwapperCrop,
                         cropMask = composite.cropMask,
                         pasteRoi = composite.roi,
@@ -115,15 +120,21 @@ class OnnxPhotoFaceSwapPipeline(
                             totalMs = elapsedRealtimeMs() - totalStarted,
                         ),
                         sourceEmbedding = raw.sourceEmbedding,
-                    )
+                    ).also {
+                        embeddingTransferred = true
+                        undeliveredEmbedding = raw.sourceEmbedding
+                    }
                 } finally {
-                    raw.recycleBitmaps()
+                    raw.releaseTransientResources()
+                    if (!embeddingTransferred) raw.sourceEmbedding.fill(0f)
                 }
             }
             undeliveredBitmap = null
+            undeliveredEmbedding = null
             return result
         } finally {
             undeliveredBitmap?.recycleSafely()
+            undeliveredEmbedding?.fill(0f)
         }
     }
 
@@ -131,10 +142,12 @@ class OnnxPhotoFaceSwapPipeline(
         getPixels(pixels, 0, width, 0, 0, width, height)
     }
 
-    private fun RawFaceSwapResult.recycleBitmaps() {
+    private fun RawFaceSwapResult.releaseTransientResources() {
         alignedSource112.recycleSafely()
         alignedTarget.recycleSafely()
         rawOutputBitmap.recycleSafely()
+        rawOutput.fill(0f)
+        rawMask?.fill(0f)
     }
 
     private fun Bitmap.recycleSafely() {

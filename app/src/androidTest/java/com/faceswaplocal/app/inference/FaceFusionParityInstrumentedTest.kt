@@ -28,7 +28,13 @@ class FaceFusionParityInstrumentedTest {
     fun rawPipelinesMatchFaceFusion371CpuReference() {
         val modelStore = ModelStore(context)
         val statuses = kotlinx.coroutines.runBlocking { modelStore.refreshStatuses() }
-        ModelCatalog.all.forEach { descriptor ->
+        val requiredModelIds = setOf(
+            ModelId.YOLOFACE_8N,
+            ModelId.ARCFACE_W600K_R50,
+            ModelId.HYPERSWAP_1A_256,
+            ModelId.INSWAPPER_128_FP16,
+        )
+        requiredModelIds.map(ModelCatalog::descriptor).forEach { descriptor ->
             assertTrue(
                 "Import and verify ${descriptor.fileName} through the app before parity",
                 statuses[descriptor.id] is ModelStatus.Ready,
@@ -106,6 +112,9 @@ class FaceFusionParityInstrumentedTest {
                     assertEquals(InferenceBackend.CPU, result.recognizerBackend)
                     assertEquals(InferenceBackend.CPU, result.swapperBackend)
                 } finally {
+                    result.rawOutput.fill(0f)
+                    result.rawMask?.fill(0f)
+                    result.sourceEmbedding.fill(0f)
                     source.recycle()
                     target.recycle()
                     result.alignedSource112.recycle()
