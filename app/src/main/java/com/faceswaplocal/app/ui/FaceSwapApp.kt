@@ -1,9 +1,13 @@
 package com.faceswaplocal.app.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Paint
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
 import androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia
@@ -31,6 +35,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -41,12 +46,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -62,7 +69,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.faceswaplocal.app.domain.DetectedFace
+import com.faceswaplocal.app.domain.ExportFormat
+import com.faceswaplocal.app.domain.ExportSettings
 import com.faceswaplocal.app.domain.FaceId
+import com.faceswaplocal.app.domain.ProcessingProgress
+import com.faceswaplocal.app.domain.ProcessingStage
 import com.faceswaplocal.app.domain.SwapAssignment
 import com.faceswaplocal.app.inference.ModelCatalog
 import com.faceswaplocal.app.inference.ModelDescriptor
@@ -87,6 +98,18 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         if (uri != null && modelId != null) {
             viewModel.importModel(modelId, uri)
         }
+    }
+
+    // Only reached on API 28, where MediaStore has no pending row and inserting into the
+    // images collection would need the forbidden full-storage permission (§5.1).
+    val exportDestinationRequest = state.exportDestinationRequest
+    val destinationPicker = rememberLauncherForActivityResult(
+        CreateDocument(exportDestinationRequest?.mimeType ?: "image/jpeg"),
+    ) { uri ->
+        if (uri != null) viewModel.provideExportDestination(uri) else viewModel.cancelExportDestinationRequest()
+    }
+    LaunchedEffect(exportDestinationRequest) {
+        exportDestinationRequest?.let { request -> destinationPicker.launch(request.suggestedName) }
     }
 
     FaceSwapScreen(
@@ -116,6 +139,12 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         onRestorationStrengthChange = viewModel::setRestorationStrength,
         onParserSwapMaskEnabledChange = viewModel::setParserSwapMaskEnabled,
         onRunPhotoSwap = viewModel::runPhotoSwap,
+        onCancelPhotoSwap = viewModel::cancelPhotoSwap,
+        onExportFormatChange = viewModel::setExportFormat,
+        onJpegQualityChange = viewModel::setJpegQuality,
+        onWatermarkEnabledChange = viewModel::setWatermarkEnabled,
+        onExport = viewModel::exportResult,
+        onDismissExportError = viewModel::dismissExportError,
         onPhotoResultDisposed = viewModel::onPhotoResultDisposed,
         onDismissError = viewModel::dismissError,
     )
@@ -137,6 +166,12 @@ internal fun FaceSwapScreen(
     onRestorationStrengthChange: (Float) -> Unit,
     onParserSwapMaskEnabledChange: (Boolean) -> Unit,
     onRunPhotoSwap: () -> Unit,
+    onCancelPhotoSwap: () -> Unit,
+    onExportFormatChange: (ExportFormat) -> Unit,
+    onJpegQualityChange: (Int) -> Unit,
+    onWatermarkEnabledChange: (Boolean) -> Unit,
+    onExport: () -> Unit,
+    onDismissExportError: () -> Unit,
     onPhotoResultDisposed: (MultiPhotoFaceSwapResult) -> Unit,
     onDismissError: () -> Unit,
 ) {
@@ -234,8 +269,20 @@ internal fun FaceSwapScreen(
                     onRestorationStrengthChange = onRestorationStrengthChange,
                     onParserSwapMaskEnabledChange = onParserSwapMaskEnabledChange,
                     onRunPhotoSwap = onRunPhotoSwap,
+                    onCancelPhotoSwap = onCancelPhotoSwap,
                     onPhotoResultDisposed = onPhotoResultDisposed,
                 )
+
+                if (state.photoSwapResult != null) {
+                    ExportCard(
+                        state = state,
+                        onExportFormatChange = onExportFormatChange,
+                        onJpegQualityChange = onJpegQualityChange,
+                        onWatermarkEnabledChange = onWatermarkEnabledChange,
+                        onExport = onExport,
+                        onDismissExportError = onDismissExportError,
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -609,9 +656,10 @@ private fun PhotoSwapCard(
     onRestorationStrengthChange: (Float) -> Unit,
     onParserSwapMaskEnabledChange: (Boolean) -> Unit,
     onRunPhotoSwap: () -> Unit,
+    onCancelPhotoSwap: () -> Unit,
     onPhotoResultDisposed: (MultiPhotoFaceSwapResult) -> Unit,
 ) {
-    val controlsEnabled = state.photoSwapPhase != PhotoSwapPhase.RUNNING
+    val controlsEnabled = !state.isProcessing
     val settings = state.qualitySettings
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -690,18 +738,21 @@ private fun PhotoSwapCard(
             Button(
                 onClick = onRunPhotoSwap,
                 enabled = state.canRunPhotoSwap,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("run-photo-swap"),
             ) {
                 Text(
                     when (state.photoSwapPhase) {
                         PhotoSwapPhase.RUNNING -> "Локальная замена выполняется…"
+                        PhotoSwapPhase.CANCELLING -> "Останавливаю на безопасной границе…"
                         PhotoSwapPhase.READY -> "Повторить обработку"
                         else -> "Обработать фото"
                     },
                 )
             }
 
-            if (!state.canRunPhotoSwap && state.photoSwapPhase != PhotoSwapPhase.RUNNING) {
+            if (!state.canRunPhotoSwap && !state.isProcessing) {
                 Text(
                     text = "Для запуска нужны назначения и проверенные YOLOFace, ArcFace и InSwapper. BiSeNet и GFPGAN требуются только выбранным режимам качества.",
                     style = MaterialTheme.typography.bodySmall,
@@ -709,14 +760,16 @@ private fun PhotoSwapCard(
                 )
             }
 
-            if (state.photoSwapPhase == PhotoSwapPhase.RUNNING) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 3.dp)
-                    Text("Локально выполняю свапы, затем восстановление деталей; предыдущий результат остаётся доступен до готовности нового.")
-                }
+            if (state.isProcessing || state.exportPhase == ExportPhase.RUNNING) {
+                ProcessingProgressView(
+                    progress = state.processingProgress,
+                    cancelling = state.photoSwapPhase == PhotoSwapPhase.CANCELLING,
+                    // Saving is a short, atomic step: it is reported, but the cancel
+                    // action stays bound to the long inference run.
+                    showCancel = state.isProcessing,
+                    canCancel = state.canCancelPhotoSwap,
+                    onCancel = onCancelPhotoSwap,
+                )
             }
 
             state.photoSwapError?.let { message ->
@@ -740,6 +793,256 @@ private fun PhotoSwapCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * FR-PHOTO-07: stage, face number and total, plus a cancel action. No remaining-time
+ * estimate is shown, as §9.4 forbids promising one without statistics.
+ */
+@Composable
+private fun ProcessingProgressView(
+    progress: ProcessingProgress?,
+    cancelling: Boolean,
+    showCancel: Boolean,
+    canCancel: Boolean,
+    onCancel: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 3.dp)
+            Text(
+                text = if (cancelling) {
+                    "Отмена: останавливаю на ближайшей безопасной границе…"
+                } else {
+                    progressStatusText(progress)
+                },
+                modifier = Modifier.testTag("processing-status"),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        LinearProgressIndicator(
+            progress = { progress?.fraction ?: 0f },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("processing-progress"),
+        )
+        if (showCancel) {
+            OutlinedButton(
+                onClick = onCancel,
+                enabled = canCancel,
+                modifier = Modifier.testTag("cancel-photo-swap"),
+            ) {
+                Text("Отменить")
+            }
+            Text(
+                text = "Предыдущий результат остаётся доступен до готовности нового.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun progressStatusText(progress: ProcessingProgress?): String {
+    if (progress == null) return "Подготовка…"
+    val stage = when (progress.stage) {
+        ProcessingStage.PREPARING -> "Подготовка"
+        ProcessingStage.DETECTING -> "Поиск лиц нейродетектором"
+        ProcessingStage.SWAPPING -> "Замена лица"
+        ProcessingStage.RESTORING -> "Восстановление деталей"
+        ProcessingStage.EXPORTING -> "Сохранение в галерею"
+        ProcessingStage.COMPLETED -> "Готово"
+    }
+    return if (progress.currentFace > 0) {
+        "$stage · лицо ${progress.currentFace} из ${progress.totalFaces}"
+    } else {
+        stage
+    }
+}
+
+/** FR-PHOTO-09 export controls and the saved-file confirmation. */
+@Composable
+private fun ExportCard(
+    state: FaceSwapUiState,
+    onExportFormatChange: (ExportFormat) -> Unit,
+    onJpegQualityChange: (Int) -> Unit,
+    onWatermarkEnabledChange: (Boolean) -> Unit,
+    onExport: () -> Unit,
+    onDismissExportError: () -> Unit,
+) {
+    val settings = state.exportSettings
+    val controlsEnabled = state.exportPhase != ExportPhase.RUNNING &&
+        state.exportDestinationRequest == null
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "5. Сохранить в галерею",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Файл создаётся рядом с оригиналом под именем FaceSwapLocal_дата_время. Исходная фотография не изменяется, геолокация и другие EXIF-поля оригинала в новый файл не переносятся.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = settings.format == ExportFormat.JPEG,
+                    onClick = { onExportFormatChange(ExportFormat.JPEG) },
+                    enabled = controlsEnabled,
+                    label = { Text("JPEG") },
+                    modifier = Modifier.testTag("export-format-jpeg"),
+                )
+                FilterChip(
+                    selected = settings.format == ExportFormat.PNG,
+                    onClick = { onExportFormatChange(ExportFormat.PNG) },
+                    enabled = controlsEnabled,
+                    label = { Text("PNG") },
+                    modifier = Modifier.testTag("export-format-png"),
+                )
+            }
+
+            Text(
+                text = if (settings.format == ExportFormat.JPEG) {
+                    "Качество JPEG: ${settings.jpegQuality}"
+                } else {
+                    "PNG сохраняется без потерь, ползунок качества не применяется"
+                },
+                modifier = Modifier.testTag("export-quality-label"),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Slider(
+                value = settings.jpegQuality.toFloat(),
+                onValueChange = { value -> onJpegQualityChange(value.toInt()) },
+                valueRange = ExportSettings.MIN_JPEG_QUALITY.toFloat()..ExportSettings.MAX_JPEG_QUALITY.toFloat(),
+                steps = ExportSettings.MAX_JPEG_QUALITY - ExportSettings.MIN_JPEG_QUALITY - 1,
+                enabled = controlsEnabled && settings.format == ExportFormat.JPEG,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("export-jpeg-quality"),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Видимый водяной знак", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Включён по умолчанию; выключается для личного использования",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.watermarkEnabled,
+                    onCheckedChange = onWatermarkEnabledChange,
+                    enabled = controlsEnabled,
+                    modifier = Modifier.testTag("export-watermark"),
+                )
+            }
+
+            Button(
+                onClick = onExport,
+                enabled = state.canExport,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("export-save"),
+            ) {
+                Text(
+                    when {
+                        state.exportPhase == ExportPhase.RUNNING -> "Сохраняю…"
+                        state.savedExport != null -> "Сохранить ещё раз"
+                        else -> "Сохранить в галерею"
+                    },
+                )
+            }
+
+            if (state.exportDestinationRequest != null) {
+                Text(
+                    text = "Android 9 не поддерживает отложенную запись в галерею без полного доступа к хранилищу, поэтому выберите папку и имя файла в системном диалоге.",
+                    modifier = Modifier.testTag("export-destination-hint"),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+
+            state.exportError?.let { message ->
+                ErrorCard(message = message, onDismiss = onDismissExportError)
+            }
+
+            state.savedExport?.let { saved ->
+                SavedExportView(saved = saved, preview = state.photoSwapResult?.finalBitmap)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedExportView(saved: SavedExport, preview: Bitmap?) {
+    val context = LocalContext.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (preview != null && !preview.isRecycled) {
+            Image(
+                bitmap = remember(preview) { preview.asImageBitmap() },
+                contentDescription = "Миниатюра сохранённого файла",
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(Color.Black, RoundedCornerShape(10.dp))
+                    .testTag("export-thumbnail"),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Сохранено", fontWeight = FontWeight.SemiBold)
+            Text(
+                text = saved.displayName,
+                modifier = Modifier.testTag("export-file-name"),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = buildString {
+                    saved.album?.let { append("Альбом $it · ") }
+                    append("${saved.width}×${saved.height}")
+                },
+                modifier = Modifier.testTag("export-location"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        OutlinedButton(
+            onClick = { openSavedImage(context, saved.uri) },
+            modifier = Modifier.testTag("export-open"),
+        ) {
+            Text("Открыть")
+        }
+    }
+}
+
+/** Hands the saved file to the system viewer; no data leaves the device. */
+private fun openSavedImage(context: android.content.Context, uri: Uri) {
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "image/*")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        // A device without a gallery viewer keeps the saved file; nothing else to do.
     }
 }
 
@@ -794,7 +1097,7 @@ private fun PhotoSwapResultView(
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = "Результат находится только в памяти и ещё не сохранён. Экспорт пока не подключён.",
+            text = "Результат находится только в памяти. Сохранение выполняется отдельной кнопкой ниже.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

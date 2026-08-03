@@ -3,6 +3,8 @@ package com.faceswaplocal.app.inference
 import android.graphics.Bitmap
 import android.os.SystemClock
 import com.faceswaplocal.app.domain.FaceId
+import com.faceswaplocal.app.domain.ProcessingProgress
+import com.faceswaplocal.app.domain.ProcessingStage
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.ensureActive
 
@@ -69,6 +71,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
         backend: RequestedInferenceBackend,
         restorationStrength: Float = 0f,
         swapBlendMaskMode: SwapBlendMaskMode = SwapBlendMaskMode.PARSER_REGION,
+        onProgress: (ProcessingProgress) -> Unit = {},
     ): MultiPhotoFaceSwapResult? {
         require(restorationStrength.isFinite() && restorationStrength in 0f..1f) {
             "Restoration strength must be in [0, 1]"
@@ -86,7 +89,15 @@ class OnnxMultiPhotoFaceSwapPipeline(
         }
         if (workItems.isEmpty()) return null
 
+        val progress = ProgressReporter(
+            onProgress = onProgress,
+            totalFaces = workItems.size,
+            restorationPlanned = restorationStrength > 0f,
+        )
+        progress.report(ProcessingStage.PREPARING)
+
         val started = SystemClock.elapsedRealtime()
+        progress.report(ProcessingStage.DETECTING)
         val (resolvedTargets, detectorBackend) = rawPipeline.detectFaces(target, backend)
         val needsParser =
             swapBlendMaskMode == SwapBlendMaskMode.PARSER_REGION || restorationStrength > 0f
@@ -107,6 +118,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
                         swapBlendMaskMode = swapBlendMaskMode,
                         parserSession = parserSession,
                         started = started,
+                        progress = progress,
                     ).also { undeliveredResult = it }
                 }
             } else {
@@ -120,6 +132,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
                     swapBlendMaskMode = swapBlendMaskMode,
                     parserSession = null,
                     started = started,
+                    progress = progress,
                 ).also { undeliveredResult = it }
             }
             undeliveredResult = null
@@ -139,6 +152,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
         swapBlendMaskMode: SwapBlendMaskMode,
         parserSession: FaceParserSession?,
         started: Long,
+        progress: ProgressReporter,
     ): MultiPhotoFaceSwapResult {
         var accumulated: IntArray? = null
         var finalPixels: IntArray? = null
@@ -159,8 +173,9 @@ class OnnxMultiPhotoFaceSwapPipeline(
         var delivered = false
         try {
             // Pass 1. No restoration call is reachable from inside this loop.
-            for (workItem in workItems) {
+            for ((index, workItem) in workItems.withIndex()) {
                 coroutineContext.ensureActive()
+                progress.report(ProcessingStage.SWAPPING, completedFaces = index)
                 val next = photoPipeline.process(
                     PhotoFaceSwapRequest(
                         source = workItem.source.bitmap,
@@ -193,6 +208,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
                 next.parserBackend?.let(swapParserBackends::add)
                 swapParserMs += next.timings.parserMs
                 next.cropMask.fill(0f)
+                progress.report(ProcessingStage.SWAPPING, completedFaces = index + 1)
             }
 
             val swapResult = checkNotNull(lastSwap) { "No assigned face produced a swap" }
@@ -213,8 +229,9 @@ class OnnxMultiPhotoFaceSwapPipeline(
                     .filterNot(appliedTargetFaces::contains)
                     .map { face -> ffhqRoi(face, target.width, target.height) }
                 val enhancementStarted = SystemClock.elapsedRealtime()
-                for (applied in appliedSwaps) {
+                for ((index, applied) in appliedSwaps.withIndex()) {
                     coroutineContext.ensureActive()
+                    progress.report(ProcessingStage.RESTORING, completedFaces = index)
                     val enhanced = enhancer.enhance(
                         basePixels = requireNotNull(finalPixels),
                         baseWidth = target.width,
@@ -234,6 +251,7 @@ class OnnxMultiPhotoFaceSwapPipeline(
                     )
                     enhancerBackends += enhanced.enhancerBackend
                     enhancementParserBackends += enhanced.parserBackend
+                    progress.report(ProcessingStage.RESTORING, completedFaces = index + 1)
                 }
                 enhancementMs = SystemClock.elapsedRealtime() - enhancementStarted
             }
@@ -281,6 +299,31 @@ class OnnxMultiPhotoFaceSwapPipeline(
             accumulated?.fill(0)
             workingSwapBitmap?.recycleSafely()
             if (!delivered) resultBitmap?.recycleSafely()
+        }
+    }
+
+    /**
+     * Converts coordinator positions into the domain progress model. Only assigned faces
+     * are counted, because only they enter either pass; a duplicate event is dropped so
+     * the UI is not woken up between two identical states.
+     */
+    private class ProgressReporter(
+        private val onProgress: (ProcessingProgress) -> Unit,
+        private val totalFaces: Int,
+        private val restorationPlanned: Boolean,
+    ) {
+        private var last: ProcessingProgress? = null
+
+        fun report(stage: ProcessingStage, completedFaces: Int = 0) {
+            val next = ProcessingProgress(
+                stage = stage,
+                completedFaces = completedFaces.coerceIn(0, totalFaces),
+                totalFaces = totalFaces,
+                restorationPlanned = restorationPlanned,
+            )
+            if (next == last) return
+            last = next
+            onProgress(next)
         }
     }
 

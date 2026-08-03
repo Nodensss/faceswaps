@@ -10,6 +10,8 @@ import com.faceswaplocal.app.domain.DetectedFace
 import com.faceswaplocal.app.domain.FaceAssignmentPlanner
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.NormalizedRect
+import com.faceswaplocal.app.domain.ProcessingProgress
+import com.faceswaplocal.app.domain.ProcessingStage
 import com.faceswaplocal.app.inference.InferenceBackend
 import com.faceswaplocal.app.inference.MultiPhotoFaceSwapResult
 import com.faceswaplocal.app.inference.PhotoFaceSwapTimings
@@ -22,6 +24,8 @@ class StageDUiTestActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // `-e stage e2-progress` renders the running screen for report screenshots.
+        val forcedProgressStage = intent?.getStringExtra(EXTRA_PROGRESS_STAGE)
         if (faceSwapViewModel.state.value.phase != AnalysisPhase.MAPPING) {
             val sources = (1..3).map { face("source-$it", it * 0.1f) }
             val targets = (1..4).map { face("target-$it", it * 0.08f) }
@@ -42,6 +46,20 @@ class StageDUiTestActivity : ComponentActivity() {
                 ),
             )
         }
+        forcedProgressStage?.let { stageName ->
+            val stage = ProcessingStage.valueOf(stageName)
+            faceSwapViewModel.injectUiStateForTest(
+                faceSwapViewModel.state.value.copy(
+                    photoSwapPhase = PhotoSwapPhase.RUNNING,
+                    processingProgress = ProcessingProgress(
+                        stage = stage,
+                        completedFaces = 1,
+                        totalFaces = 3,
+                        restorationPlanned = true,
+                    ),
+                ),
+            )
+        }
         setContent {
             val state = faceSwapViewModel.state.collectAsStateWithLifecycle().value
             FaceSwapLocalTheme {
@@ -59,11 +77,21 @@ class StageDUiTestActivity : ComponentActivity() {
                     onRestorationStrengthChange = faceSwapViewModel::setRestorationStrength,
                     onParserSwapMaskEnabledChange = faceSwapViewModel::setParserSwapMaskEnabled,
                     onRunPhotoSwap = {},
+                    onCancelPhotoSwap = faceSwapViewModel::cancelPhotoSwap,
+                    onExportFormatChange = faceSwapViewModel::setExportFormat,
+                    onJpegQualityChange = faceSwapViewModel::setJpegQuality,
+                    onWatermarkEnabledChange = faceSwapViewModel::setWatermarkEnabled,
+                    onExport = faceSwapViewModel::exportResult,
+                    onDismissExportError = faceSwapViewModel::dismissExportError,
                     onPhotoResultDisposed = faceSwapViewModel::onPhotoResultDisposed,
                     onDismissError = {},
                 )
             }
         }
+    }
+
+    companion object {
+        const val EXTRA_PROGRESS_STAGE = "stage_e2_progress_stage"
     }
 
     private fun face(id: String, offset: Float) = DetectedFace(

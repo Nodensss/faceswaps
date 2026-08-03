@@ -9,12 +9,19 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.faceswaplocal.app.data.BitmapLoader
+import com.faceswaplocal.app.data.ExportFailure
+import com.faceswaplocal.app.data.ExportOutcome
 import com.faceswaplocal.app.data.MlKitLocalFaceDetector
+import com.faceswaplocal.app.data.ResultExporter
 import com.faceswaplocal.app.domain.DetectedFace
+import com.faceswaplocal.app.domain.ExportFormat
+import com.faceswaplocal.app.domain.ExportSettings
 import com.faceswaplocal.app.domain.FaceAssignmentPlanner
 import com.faceswaplocal.app.domain.AssignmentStateCodec
 import com.faceswaplocal.app.domain.FaceQualitySettings
 import com.faceswaplocal.app.domain.FaceId
+import com.faceswaplocal.app.domain.ProcessingProgress
+import com.faceswaplocal.app.domain.ProcessingStage
 import com.faceswaplocal.app.domain.SwapAssignment
 import com.faceswaplocal.app.inference.ModelCatalog
 import com.faceswaplocal.app.inference.ModelId
@@ -57,8 +64,51 @@ enum class AnalysisPhase {
 enum class PhotoSwapPhase {
     IDLE,
     RUNNING,
+
+    /** Cancel was requested; the coordinator stops at its next safe boundary. */
+    CANCELLING,
     READY,
     ERROR,
+}
+
+enum class ExportPhase {
+    IDLE,
+    RUNNING,
+    SAVED,
+    ERROR,
+}
+
+/** UI-safe description of a saved file: a content URI, never a filesystem path. */
+data class SavedExport(
+    val uri: Uri,
+    val displayName: String,
+    val album: String?,
+    val width: Int,
+    val height: Int,
+)
+
+/** API 28 has no pending MediaStore row, so the user names the file through SAF. */
+data class ExportDestinationRequest(
+    val suggestedName: String,
+    val mimeType: String,
+)
+
+internal object ExportSettingsSavedState {
+    private const val FORMAT = "photo_export_format"
+    private const val JPEG_QUALITY = "photo_export_jpeg_quality"
+    private const val WATERMARK_ENABLED = "photo_export_watermark_enabled"
+
+    fun read(handle: SavedStateHandle): ExportSettings = ExportSettings.fromPersisted(
+        formatName = handle[FORMAT],
+        jpegQuality = handle[JPEG_QUALITY],
+        watermarkEnabled = handle[WATERMARK_ENABLED],
+    )
+
+    fun write(handle: SavedStateHandle, settings: ExportSettings) {
+        handle[FORMAT] = settings.format.name
+        handle[JPEG_QUALITY] = settings.jpegQuality
+        handle[WATERMARK_ENABLED] = settings.watermarkEnabled
+    }
 }
 
 internal object FaceQualitySettingsSavedState {
@@ -124,21 +174,42 @@ data class FaceSwapUiState(
     val modelStatuses: Map<ModelId, ModelStatus> = ModelCatalog.all.associate { it.id to ModelStatus.Missing },
     val modelMessage: String? = null,
     val qualitySettings: FaceQualitySettings = FaceQualitySettings(),
+    val exportSettings: ExportSettings = ExportSettings(),
     val photoSwapPhase: PhotoSwapPhase = PhotoSwapPhase.IDLE,
     val photoSwapResult: MultiPhotoFaceSwapResult? = null,
     val photoSwapError: String? = null,
+    val processingProgress: ProcessingProgress? = null,
+    val exportPhase: ExportPhase = ExportPhase.IDLE,
+    val savedExport: SavedExport? = null,
+    val exportError: String? = null,
+    val exportDestinationRequest: ExportDestinationRequest? = null,
 ) {
     val canAnalyze: Boolean
-        get() = sourceUris.isNotEmpty() && targetUri != null && phase != AnalysisPhase.ANALYZING
+        get() = sourceUris.isNotEmpty() && targetUri != null && phase != AnalysisPhase.ANALYZING &&
+            !isProcessing
+
+    /** A run in progress, including the window between cancel request and safe stop. */
+    val isProcessing: Boolean
+        get() = photoSwapPhase == PhotoSwapPhase.RUNNING || photoSwapPhase == PhotoSwapPhase.CANCELLING
 
     val canRunPhotoSwap: Boolean
         get() {
             return phase == AnalysisPhase.MAPPING &&
-                photoSwapPhase != PhotoSwapPhase.RUNNING &&
+                !isProcessing &&
+                exportPhase != ExportPhase.RUNNING &&
                 targetBitmap != null &&
                 assignments.isNotEmpty() &&
                 qualitySettings.requiredModelIds().all { modelStatuses[it] is ModelStatus.Ready }
         }
+
+    val canCancelPhotoSwap: Boolean
+        get() = photoSwapPhase == PhotoSwapPhase.RUNNING
+
+    val canExport: Boolean
+        get() = photoSwapResult != null &&
+            photoSwapPhase == PhotoSwapPhase.READY &&
+            exportPhase != ExportPhase.RUNNING &&
+            exportDestinationRequest == null
 }
 
 class FaceSwapViewModel(application: Application, private val savedStateHandle: SavedStateHandle) : AndroidViewModel(application) {
@@ -155,8 +226,12 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         faceEnhancerPipeline,
         faceParserPipeline,
     )
+    private val resultExporter = ResultExporter(application)
     private val mutableState = MutableStateFlow(
-        FaceSwapUiState(qualitySettings = FaceQualitySettingsSavedState.read(savedStateHandle)),
+        FaceSwapUiState(
+            qualitySettings = FaceQualitySettingsSavedState.read(savedStateHandle),
+            exportSettings = ExportSettingsSavedState.read(savedStateHandle),
+        ),
     )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val retiredPhotoResults = Collections.newSetFromMap(
@@ -164,6 +239,13 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
     )
     private var analysisJob: Job? = null
     private var photoSwapJob: Job? = null
+    private var exportJob: Job? = null
+
+    /**
+     * Monotonic id of the current swap run. A cancelled run may finish its unwinding after
+     * a newer run has already started, and must not overwrite the newer run's state.
+     */
+    private var photoSwapRunId = 0L
 
     val state: StateFlow<FaceSwapUiState> = mutableState.asStateFlow()
 
@@ -173,6 +255,7 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         mutableState.value = testState
         persistAssignments()
         FaceQualitySettingsSavedState.write(savedStateHandle, testState.qualitySettings)
+        ExportSettingsSavedState.write(savedStateHandle, testState.exportSettings)
     }
 
     init {
@@ -191,6 +274,9 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
             modelStore.cleanupInterruptedImports()
             modelStore.refreshStatuses()
         }
+        // Staging files and pending MediaStore rows an earlier process could not clean up
+        // after a crash are removed before the first export of this session (§5.1).
+        viewModelScope.launch { resultExporter.sweepAbandonedData() }
     }
 
     fun selectSources(uris: List<Uri>) {
@@ -212,7 +298,9 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
 
         analysisJob?.cancel()
         val runningPhotoSwap = photoSwapJob
+        photoSwapRunId++
         runningPhotoSwap?.cancel()
+        exportJob?.cancel()
         val previousState = mutableState.value
         retirePhotoResult(previousState.photoSwapResult)
         mutableState.update {
@@ -227,7 +315,7 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                 photoSwapPhase = PhotoSwapPhase.IDLE,
                 photoSwapResult = null,
                 photoSwapError = null,
-            )
+            ).withoutExportState()
         }
         releaseInputBitmapsAfter(
             job = runningPhotoSwap,
@@ -322,12 +410,24 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
             current.sourceBitmaps[face.id]?.let { bitmap -> MultiPhotoSource(face.id, bitmap, face.toPixelBox(bitmap)) }
         }
 
+        // Claim the new id before cancelling, so the outgoing run can never win the race
+        // and reset the state this run is about to publish.
+        val runId = ++photoSwapRunId
         photoSwapJob?.cancel()
         photoSwapJob = viewModelScope.launch {
             mutableState.update {
                 it.copy(
                     photoSwapPhase = PhotoSwapPhase.RUNNING,
                     photoSwapError = null,
+                    processingProgress = ProcessingProgress(
+                        stage = ProcessingStage.PREPARING,
+                        totalFaces = selectedAssignments.size,
+                        restorationPlanned = current.qualitySettings.effectiveRestorationStrength > 0f,
+                    ),
+                    exportPhase = ExportPhase.IDLE,
+                    savedExport = null,
+                    exportError = null,
+                    exportDestinationRequest = null,
                 )
             }
             try {
@@ -339,6 +439,7 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                     backend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
                     restorationStrength = current.qualitySettings.effectiveRestorationStrength,
                     swapBlendMaskMode = current.qualitySettings.swapBlendMaskMode(),
+                    onProgress = { progress -> publishProgress(runId, progress) },
                 ) ?: throw IllegalStateException("No target face is assigned")
                 publishOrReleaseOwnedResult(
                     result = result,
@@ -350,22 +451,61 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                             it.copy(
                                 photoSwapPhase = PhotoSwapPhase.READY,
                                 photoSwapResult = publishedResult,
+                                processingProgress = ProcessingProgress(
+                                    stage = ProcessingStage.COMPLETED,
+                                    completedFaces = selectedAssignments.size,
+                                    totalFaces = selectedAssignments.size,
+                                    restorationPlanned = current.qualitySettings.effectiveRestorationStrength > 0f,
+                                ),
                             )
                         }
                     },
                     release = { unpublishedResult -> recycleBitmap(unpublishedResult.finalBitmap) },
                 )
             } catch (cancelled: CancellationException) {
+                // The coordinator already released its sessions and bitmaps in its own
+                // finally block; only the UI-visible run state is reset here.
+                if (photoSwapRunId == runId) {
+                    mutableState.update {
+                        it.copy(
+                            photoSwapPhase = PhotoSwapPhase.IDLE,
+                            processingProgress = null,
+                        )
+                    }
+                }
                 throw cancelled
             } catch (error: Throwable) {
                 mutableState.update {
                     it.copy(
                         photoSwapPhase = PhotoSwapPhase.ERROR,
                         photoSwapError = error.toUserMessage(),
+                        processingProgress = null,
                     )
                 }
+            } finally {
+                if (photoSwapRunId == runId) sweepTemporaryFiles()
             }
         }
+    }
+
+    /** Requests a stop; the coordinator observes it at its next `ensureActive` boundary. */
+    fun cancelPhotoSwap() {
+        val running = photoSwapJob ?: return
+        if (!mutableState.value.canCancelPhotoSwap) return
+        mutableState.update { it.copy(photoSwapPhase = PhotoSwapPhase.CANCELLING) }
+        running.cancel()
+    }
+
+    private fun publishProgress(runId: Long, progress: ProcessingProgress) {
+        if (photoSwapRunId != runId) return
+        mutableState.update { state ->
+            if (state.photoSwapPhase != PhotoSwapPhase.RUNNING) state
+            else state.copy(processingProgress = progress)
+        }
+    }
+
+    private fun sweepTemporaryFiles() {
+        viewModelScope.launch { resultExporter.sweepStagingFiles() }
     }
 
     fun assignSource(targetFaceId: FaceId, sourceFaceId: FaceId) {
@@ -424,6 +564,133 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
         updateQualitySettings { settings -> settings.copy(parserSwapMaskEnabled = enabled) }
     }
 
+    fun setExportFormat(format: ExportFormat) {
+        updateExportSettings { settings -> settings.copy(format = format) }
+    }
+
+    fun setJpegQuality(quality: Int) {
+        updateExportSettings { settings ->
+            settings.copy(jpegQuality = ExportSettings.sanitizedQuality(quality))
+        }
+    }
+
+    fun setWatermarkEnabled(enabled: Boolean) {
+        updateExportSettings { settings -> settings.copy(watermarkEnabled = enabled) }
+    }
+
+    /**
+     * Saves the current result. On API 29+ the destination is a pending MediaStore row; on
+     * API 28 the exporter asks for a SAF document first, which the UI answers through
+     * [provideExportDestination].
+     */
+    fun exportResult() {
+        val current = mutableState.value
+        if (!current.canExport) return
+        val bitmap = current.photoSwapResult?.finalBitmap ?: return
+        if (bitmap.isRecycled) return
+        startExport(bitmap, current.exportSettings, destination = null)
+    }
+
+    fun provideExportDestination(destination: Uri) {
+        val current = mutableState.value
+        val bitmap = current.photoSwapResult?.finalBitmap ?: return
+        if (current.exportDestinationRequest == null || bitmap.isRecycled) return
+        mutableState.update { it.copy(exportDestinationRequest = null) }
+        startExport(bitmap, current.exportSettings, destination = destination)
+    }
+
+    fun cancelExportDestinationRequest() {
+        mutableState.update {
+            it.copy(exportDestinationRequest = null, exportPhase = ExportPhase.IDLE)
+        }
+    }
+
+    fun dismissExportError() {
+        mutableState.update { it.copy(exportError = null, exportPhase = ExportPhase.IDLE) }
+    }
+
+    private fun startExport(bitmap: Bitmap, settings: ExportSettings, destination: Uri?) {
+        exportJob?.cancel()
+        exportJob = viewModelScope.launch {
+            mutableState.update {
+                it.copy(
+                    exportPhase = ExportPhase.RUNNING,
+                    exportError = null,
+                    savedExport = null,
+                    processingProgress = it.processingProgress?.copy(stage = ProcessingStage.EXPORTING),
+                )
+            }
+            try {
+                when (val outcome = resultExporter.export(bitmap, settings, destination)) {
+                    is ExportOutcome.Saved -> mutableState.update {
+                        it.copy(
+                            exportPhase = ExportPhase.SAVED,
+                            processingProgress = it.processingProgress
+                                ?.copy(stage = ProcessingStage.COMPLETED),
+                            savedExport = SavedExport(
+                                uri = outcome.uri,
+                                displayName = outcome.displayName,
+                                album = outcome.album,
+                                width = outcome.width,
+                                height = outcome.height,
+                            ),
+                        )
+                    }
+
+                    is ExportOutcome.NeedsDestination -> mutableState.update {
+                        it.copy(
+                            exportPhase = ExportPhase.IDLE,
+                            exportDestinationRequest = ExportDestinationRequest(
+                                suggestedName = outcome.suggestedName,
+                                mimeType = outcome.mimeType,
+                            ),
+                        )
+                    }
+
+                    is ExportOutcome.Failed -> mutableState.update {
+                        it.copy(
+                            exportPhase = ExportPhase.ERROR,
+                            exportError = outcome.reason.toUserMessage(),
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                mutableState.update { it.copy(exportPhase = ExportPhase.IDLE) }
+                throw cancelled
+            } catch (error: Throwable) {
+                mutableState.update {
+                    it.copy(
+                        exportPhase = ExportPhase.ERROR,
+                        exportError = ExportFailure.WRITE_FAILED.toUserMessage(),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun ExportFailure.toUserMessage(): String = when (this) {
+        ExportFailure.CACHE_UNAVAILABLE ->
+            "Недостаточно свободного места во временном хранилище приложения."
+
+        ExportFailure.ENCODE_FAILED ->
+            "Не удалось закодировать результат в выбранный формат."
+
+        ExportFailure.DESTINATION_UNAVAILABLE ->
+            "Галерея недоступна для записи. Незавершённая запись удалена."
+
+        ExportFailure.WRITE_FAILED ->
+            "Сохранение в галерею не удалось. Незавершённая запись удалена."
+    }
+
+    /** A saved-file badge must never survive the result it describes. */
+    private fun FaceSwapUiState.withoutExportState(): FaceSwapUiState = copy(
+        processingProgress = null,
+        exportPhase = ExportPhase.IDLE,
+        savedExport = null,
+        exportError = null,
+        exportDestinationRequest = null,
+    )
+
     private inline fun mutateMapping(transform: (FaceSwapUiState) -> FaceSwapUiState) {
         val current = mutableState.value
         val transformed = transform(current)
@@ -435,7 +702,7 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
             photoSwapPhase = PhotoSwapPhase.IDLE,
             photoSwapResult = null,
             photoSwapError = null,
-        )
+        ).withoutExportState()
         persistAssignments()
     }
 
@@ -453,8 +720,30 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
             photoSwapPhase = PhotoSwapPhase.IDLE,
             photoSwapResult = null,
             photoSwapError = null,
-        )
+        ).withoutExportState()
         FaceQualitySettingsSavedState.write(savedStateHandle, updated)
+    }
+
+    /**
+     * Export settings do not invalidate the processed bitmap, so the result stays on
+     * screen; only the "already saved" state is dropped because it no longer describes
+     * what the next save would produce.
+     */
+    private inline fun updateExportSettings(
+        transform: (ExportSettings) -> ExportSettings,
+    ) {
+        val current = mutableState.value
+        if (current.exportPhase == ExportPhase.RUNNING || current.exportDestinationRequest != null) return
+        val updated = transform(current.exportSettings)
+        if (updated == current.exportSettings) return
+
+        mutableState.value = current.copy(
+            exportSettings = updated,
+            exportPhase = ExportPhase.IDLE,
+            savedExport = null,
+            exportError = null,
+        )
+        ExportSettingsSavedState.write(savedStateHandle, updated)
     }
 
     fun dismissError() {
@@ -472,7 +761,9 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
 
     private fun resetSelections(sourceUris: List<Uri>, targetUri: Uri?) {
         val runningPhotoSwap = photoSwapJob
+        photoSwapRunId++
         runningPhotoSwap?.cancel()
+        exportJob?.cancel()
         val current = mutableState.value
         retirePhotoResult(current.photoSwapResult)
         mutableState.value = FaceSwapUiState(
@@ -481,6 +772,7 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
             modelStatuses = current.modelStatuses,
             modelMessage = current.modelMessage,
             qualitySettings = current.qualitySettings,
+            exportSettings = current.exportSettings,
             phase = if (sourceUris.isNotEmpty() && targetUri != null) {
                 AnalysisPhase.READY
             } else {
@@ -564,8 +856,10 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
 
     override fun onCleared() {
         analysisJob?.cancel()
+        exportJob?.cancel()
         val runningPhotoSwap = photoSwapJob
         val current = mutableState.value
+        photoSwapRunId++
         runningPhotoSwap?.cancel()
         recycleBitmap(current.photoSwapResult?.finalBitmap)
         retiredPhotoResults.forEach { result -> recycleBitmap(result.finalBitmap) }
