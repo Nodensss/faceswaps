@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.faceswaplocal.app.data.BitmapLoader
+import com.faceswaplocal.app.data.ImageMemoryBudget
 import com.faceswaplocal.app.data.ExportFailure
 import com.faceswaplocal.app.data.ExportOutcome
 import com.faceswaplocal.app.data.MlKitLocalFaceDetector
@@ -86,6 +87,9 @@ data class SavedExport(
     val width: Int,
     val height: Int,
 )
+
+/** Pixel size of the picked file, kept to tell the user when the export is smaller. */
+data class ImageSize(val width: Int, val height: Int)
 
 /** API 28 has no pending MediaStore row, so the user names the file through SAF. */
 data class ExportDestinationRequest(
@@ -165,6 +169,8 @@ data class FaceSwapUiState(
     val targetUri: Uri? = null,
     val sourceBitmap: Bitmap? = null,
     val targetBitmap: Bitmap? = null,
+    /** Size of the picked target file; null until it has been decoded. */
+    val targetSourceSize: ImageSize? = null,
     val sourceFaces: List<DetectedFace> = emptyList(),
     val sourceBitmaps: Map<FaceId, Bitmap> = emptyMap(),
     val targetFaces: List<DetectedFace> = emptyList(),
@@ -205,6 +211,17 @@ data class FaceSwapUiState(
     val canCancelPhotoSwap: Boolean
         get() = photoSwapPhase == PhotoSwapPhase.RUNNING
 
+    /**
+     * True when the memory budget forced a smaller decode, so the export cannot match
+     * the picked file's own size and the UI has to say so.
+     */
+    val exportIsDownscaled: Boolean
+        get() {
+            val source = targetSourceSize ?: return false
+            val decoded = targetBitmap ?: return false
+            return decoded.width < source.width || decoded.height < source.height
+        }
+
     val canExport: Boolean
         get() = photoSwapResult != null &&
             photoSwapPhase == PhotoSwapPhase.READY &&
@@ -213,7 +230,10 @@ data class FaceSwapUiState(
 }
 
 class FaceSwapViewModel(application: Application, private val savedStateHandle: SavedStateHandle) : AndroidViewModel(application) {
-    private val bitmapLoader = BitmapLoader(application.contentResolver)
+    private val bitmapLoader = BitmapLoader(
+        contentResolver = application.contentResolver,
+        budget = ImageMemoryBudget.forContext(application),
+    )
     private val faceDetector = MlKitLocalFaceDetector()
     private val modelStore = ModelStore(application)
     private val rawPipeline = OnnxRawFaceSwapPipeline(modelStore)
@@ -328,9 +348,10 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
             var decodedTarget: Bitmap? = null
             var stateOwnsDecodedBitmaps = false
             try {
-                val targetBitmap = bitmapLoader.load(targetUri).also { decodedTarget = it }
+                val decodedTargetImage = bitmapLoader.loadTarget(targetUri)
+                val targetBitmap = decodedTargetImage.bitmap.also { decodedTarget = it }
                 val decodedSources = sourceUris.mapIndexed { index, uri ->
-                    val bitmap = bitmapLoader.load(uri)
+                    val bitmap = bitmapLoader.loadSource(uri).bitmap
                     val faces = faceDetector.detect(bitmap, idPrefix = "source-$index")
                     bitmap to faces
                 }
@@ -350,6 +371,10 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                         sourceBitmap = decodedSources.first().first,
                         sourceBitmaps = decodedSources.flatMap { (bitmap, faces) -> faces.map { it.id to bitmap } }.toMap(),
                         targetBitmap = targetBitmap,
+                        targetSourceSize = ImageSize(
+                            width = decodedTargetImage.sourceWidth,
+                            height = decodedTargetImage.sourceHeight,
+                        ),
                         sourceFaces = sourceFaces,
                         targetFaces = targetFaces,
                         assignments = restoreAssignments(sourceFaces, targetFaces)

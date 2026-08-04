@@ -54,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -191,6 +192,9 @@ internal fun FaceSwapScreen(
             )
         },
     ) { scaffoldPadding ->
+        // §9.4: the screen must not fall asleep during a short photo run.
+        KeepScreenOnWhile(state.isProcessing)
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -287,6 +291,20 @@ internal fun FaceSwapScreen(
 
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+/**
+ * Holds the screen awake only while a run is in flight. The flag is bound to the
+ * composition's own view, so it is released on dispose even if processing ends through
+ * cancellation or an error.
+ */
+@Composable
+private fun KeepScreenOnWhile(active: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(view, active) {
+        view.keepScreenOn = active
+        onDispose { view.keepScreenOn = false }
     }
 }
 
@@ -894,6 +912,19 @@ private fun ExportCard(
                 text = "Файл создаётся рядом с оригиналом под именем FaceSwapLocal_дата_время. Исходная фотография не изменяется, геолокация и другие EXIF-поля оригинала в новый файл не переносятся.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+
+            if (state.exportIsDownscaled) {
+                val source = state.targetSourceSize
+                val decoded = state.targetBitmap
+                Text(
+                    text = "Свободной памяти не хватило на полный размер: оригинал " +
+                        "${source?.width}×${source?.height} обработан как " +
+                        "${decoded?.width}×${decoded?.height}, файл будет сохранён в этом размере.",
+                    modifier = Modifier.testTag("export-downscale-notice"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(

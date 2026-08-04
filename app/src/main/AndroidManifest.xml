@@ -10,8 +10,17 @@
         android:name="android.permission.ACCESS_NETWORK_STATE"
         tools:node="remove" />
 
+    <!--
+      largeHeap is required, not decorative: compositing a full-resolution target holds
+      four full-frame Int/Float arrays at once (see ImageMemoryBudget). On a 2 GB-class
+      device the default 192 MB growth limit would cap every photo at roughly 5 MP, which
+      contradicts §5.2's requirement to keep the target's own resolution. The adaptive
+      budget still reads the real Runtime.maxMemory(), so this raises the ceiling without
+      removing the limit.
+    -->
     <application
         android:allowBackup="false"
+        android:largeHeap="true"
         android:icon="@drawable/ic_app_icon"
         android:label="@string/app_name"
         android:roundIcon="@drawable/ic_app_icon"
