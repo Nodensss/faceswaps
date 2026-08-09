@@ -53,6 +53,7 @@ class OnnxFaceEnhancerPipeline(
         backend: RequestedInferenceBackend,
         parserSession: FaceParserSession,
         protectedBaseRois: List<CompositeRoi> = emptyList(),
+        protectedFaceRegions: List<ProtectedFaceRegion> = emptyList(),
     ): FaceEnhancementResult {
         var undeliveredPixels: IntArray? = null
         try {
@@ -126,6 +127,7 @@ class OnnxFaceEnhancerPipeline(
                 cropHeight = CROP_SIZE,
                 baseToCrop = targetToCrop,
                 protectedBaseRois = protectedBaseRois,
+                protectedFaceRegions = protectedFaceRegions,
             )
             try {
                 val compositingMs = elapsedRealtimeMs() - compositingStarted

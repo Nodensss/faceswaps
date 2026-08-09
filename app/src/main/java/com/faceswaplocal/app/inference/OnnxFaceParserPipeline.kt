@@ -169,6 +169,12 @@ class FaceParserSession internal constructor(
         cropPixels: IntArray,
         cropWidth: Int,
         cropHeight: Int,
+        /**
+         * Which BiSeNet classes the mask selects. Blending uses the swappable face
+         * regions; protecting a face the user left alone uses every non-background
+         * class, because that person's hair, ears and neck must survive as well.
+         */
+        classIds: Set<Int> = FaceRegionMask.REGION_CLASS_IDS,
     ): FaceParserMaskResult {
         require(cropWidth > 0 && cropHeight > 0 && cropWidth <= Int.MAX_VALUE / cropHeight)
         require(cropPixels.size == cropWidth * cropHeight) {
@@ -196,6 +202,7 @@ class FaceParserSession internal constructor(
                 classHeight = MODEL_SIZE,
                 outputWidth = cropWidth,
                 outputHeight = cropHeight,
+                classIds = classIds,
             )
             return FaceParserMaskResult(mask, activeBackend, inferenceMs)
         } finally {
@@ -360,12 +367,13 @@ internal object FaceRegionMask {
         classHeight: Int,
         outputWidth: Int,
         outputHeight: Int,
+        classIds: Set<Int> = REGION_CLASS_IDS,
     ): FloatArray {
         require(classWidth > 0 && classHeight > 0 && classWidth <= Int.MAX_VALUE / classHeight)
         require(classes.size == classWidth * classHeight)
         require(outputWidth > 0 && outputHeight > 0 && outputWidth <= Int.MAX_VALUE / outputHeight)
         val selected = FloatArray(classes.size) { index ->
-            if (classes[index] in REGION_CLASS_IDS) 1f else 0f
+            if (classes[index] in classIds) 1f else 0f
         }
         var resized: FloatArray? = null
         var blurred: FloatArray? = null
@@ -458,7 +466,15 @@ internal object FaceRegionMask {
     private const val GREEN_SHIFT = 8
     private const val BLUE_SHIFT = 0
     private const val CHANNEL_MASK = 0xff
-    private val REGION_CLASS_IDS = setOf(1, 2, 3, 4, 5, 6, 10, 11, 12, 13)
+    /** Swappable face regions: skin, brows, eyes, glasses, nose, mouth and lips. */
+    internal val REGION_CLASS_IDS = setOf(1, 2, 3, 4, 5, 6, 10, 11, 12, 13)
+
+    /**
+     * Everything BiSeNet does not call background: the face regions plus ears, earrings,
+     * neck, necklace, clothing, hair and hat. Used to protect a face the user left on
+     * "do not change", where losing the hairline would be just as wrong as losing skin.
+     */
+    internal val PERSON_CLASS_IDS = (1..18).toSet()
     private val IMAGENET_MEAN = floatArrayOf(0.485f, 0.456f, 0.406f)
     private val IMAGENET_STD = floatArrayOf(0.229f, 0.224f, 0.225f)
 }

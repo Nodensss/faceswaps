@@ -16,6 +16,10 @@ data class CompositeRoi(
 ) {
     val width: Int get() = right - left
     val height: Int get() = bottom - top
+
+    /** True when this ROI and [other] share at least one pixel. */
+    fun intersects(other: CompositeRoi): Boolean =
+        left < other.right && right > other.left && top < other.bottom && bottom > other.top
 }
 
 /** Per-channel affine colour correction applied before pasting the crop. */
@@ -39,6 +43,27 @@ data class PasteBackResult(
     val pixels: IntArray,
     val warpedMask: FloatArray,
     val roi: CompositeRoi,
+)
+
+/**
+ * A face the current paste must not alter, shaped by that face's own parser mask.
+ *
+ * A plain rectangle was tried first and rejected: on the dense fixture it cut the
+ * neighbouring paste dead at the box edge while its alpha was still ~12 levels per
+ * channel, leaving a straight vertical seam across the temple. Following the protected
+ * face's own soft-edged region instead keeps the interior bit-identical and lets the
+ * neighbouring blend fade out naturally outside it.
+ *
+ * [bounds] is the inverse-affine box of [mask] and is used only to skip work quickly.
+ */
+data class ProtectedFaceRegion(
+    val bounds: CompositeRoi,
+    /** Protection alpha in crop space; `1` protects fully, `0` not at all. */
+    val mask: FloatArray,
+    val cropWidth: Int,
+    val cropHeight: Int,
+    /** Maps base-image coordinates into this face's crop. */
+    val baseToCrop: AffineMatrix,
 )
 
 /**
@@ -79,6 +104,10 @@ object FaceCompositor {
         targetToCrop: AffineMatrix,
         /** Optional aligned-crop mask that can only reduce the box-mask paste alpha. */
         blendConstraintMask: FloatArray? = null,
+        /** Hard rectangular no-write regions; used when no parser mask is available. */
+        protectedBaseRois: List<CompositeRoi> = emptyList(),
+        /** Soft, face-shaped no-write regions for unassigned faces. */
+        protectedFaceRegions: List<ProtectedFaceRegion> = emptyList(),
     ): FaceCompositeResult {
         requireImage(targetPixels, targetWidth, targetHeight, "Target")
         requireImage(targetCropPixels, cropWidth, cropHeight, "Aligned target crop")
@@ -119,6 +148,8 @@ object FaceCompositor {
             cropWidth = cropWidth,
             cropHeight = cropHeight,
             baseToCrop = targetToCrop,
+            protectedBaseRois = protectedBaseRois,
+            protectedFaceRegions = protectedFaceRegions,
         )
 
         return FaceCompositeResult(
@@ -150,8 +181,14 @@ object FaceCompositor {
         cropWidth: Int,
         cropHeight: Int,
         baseToCrop: AffineMatrix,
-        /** Full-image regions that this paste is forbidden to alter. */
+        /**
+         * Hard rectangular no-write regions. Kept for the frozen Stage-C/D path, which
+         * runs without a parser session; prefer [protectedFaceRegions] wherever a mask
+         * is available, because a rectangle can cut a neighbouring blend mid-alpha.
+         */
         protectedBaseRois: List<CompositeRoi> = emptyList(),
+        /** Soft, face-shaped no-write regions; they reduce paste alpha per pixel. */
+        protectedFaceRegions: List<ProtectedFaceRegion> = emptyList(),
     ): PasteBackResult {
         requireImage(basePixels, baseWidth, baseHeight, "Base")
         requireImage(cropPixels, cropWidth, cropHeight, "Paste crop")
@@ -162,6 +199,15 @@ object FaceCompositor {
         requireFinite(baseToCrop)
         require(protectedBaseRois.all { roi -> roi.width >= 0 && roi.height >= 0 }) {
             "Protected ROI bounds must be ordered"
+        }
+        protectedFaceRegions.forEach { region ->
+            require(region.mask.size == checkedPixelCount(region.cropWidth, region.cropHeight)) {
+                "Protected face mask size must match its crop dimensions"
+            }
+            require(region.mask.all { value -> value.isFinite() && value in 0f..1f }) {
+                "Protected face mask values must be finite and within 0..1"
+            }
+            requireFinite(region.baseToCrop)
         }
 
         val roi = calculateRoi(
@@ -184,13 +230,17 @@ object FaceCompositor {
                     continue
                 }
                 val cropPoint = baseToCrop.map(Point2(baseX.toDouble(), baseY.toDouble()))
-                val alpha = sampleMaskConstantZero(
+                val pasteAlpha = sampleMaskConstantZero(
                     mask = cropMask,
                     width = cropWidth,
                     height = cropHeight,
                     x = cropPoint.x,
                     y = cropPoint.y,
                 ).coerceIn(0.0, 1.0)
+                // A protected face wins over the paste: full protection forces alpha to
+                // zero, and its soft edge fades the paste out instead of clipping it.
+                val protection = protectionAt(protectedFaceRegions, baseX, baseY)
+                val alpha = (pasteAlpha * (1.0 - protection)).coerceIn(0.0, 1.0)
                 val baseIndex = baseY * baseWidth + baseX
                 warpedMask[baseIndex] = alpha.toFloat()
                 if (alpha <= 0.0) continue
@@ -226,6 +276,35 @@ object FaceCompositor {
             warpedMask = warpedMask,
             roi = roi,
         )
+    }
+
+    /**
+     * Strongest protection claimed by any region covering this pixel. Regions are few
+     * and their bounds are checked first, so the common case costs one comparison.
+     */
+    private fun protectionAt(
+        regions: List<ProtectedFaceRegion>,
+        baseX: Int,
+        baseY: Int,
+    ): Double {
+        if (regions.isEmpty()) return 0.0
+        var strongest = 0.0
+        for (region in regions) {
+            val bounds = region.bounds
+            if (baseX < bounds.left || baseX >= bounds.right) continue
+            if (baseY < bounds.top || baseY >= bounds.bottom) continue
+            val point = region.baseToCrop.map(Point2(baseX.toDouble(), baseY.toDouble()))
+            val value = sampleMaskConstantZero(
+                mask = region.mask,
+                width = region.cropWidth,
+                height = region.cropHeight,
+                x = point.x,
+                y = point.y,
+            ).coerceIn(0.0, 1.0)
+            if (value > strongest) strongest = value
+            if (strongest >= 1.0) return 1.0
+        }
+        return strongest
     }
 
     /** FaceFusion 3.7.1 box mask with blur 0.3 and zero padding. */

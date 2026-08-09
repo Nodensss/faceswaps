@@ -27,6 +27,15 @@ data class PhotoFaceSwapRequest(
     val cachedSourceEmbedding: FloatArray? = null,
     val swapBlendMaskMode: SwapBlendMaskMode = SwapBlendMaskMode.AFFINE_BOX,
     val parserSession: FaceParserSession? = null,
+    /**
+     * Full-image regions this paste must not alter — the faces the user left on
+     * "do not change". Without them an assigned face standing close to an unassigned one
+     * pastes across its neighbour, which `StageEDenseUnassignedFaceInstrumentedTest`
+     * reproduces.
+     */
+    val protectedBaseRois: List<CompositeRoi> = emptyList(),
+    /** Face-shaped no-write regions; preferred over [protectedBaseRois] when available. */
+    val protectedFaceRegions: List<ProtectedFaceRegion> = emptyList(),
     val backend: RequestedInferenceBackend = RequestedInferenceBackend.XNNPACK_WITH_CPU_FALLBACK,
 )
 
@@ -124,6 +133,8 @@ class OnnxPhotoFaceSwapPipeline(
                             cropHeight = raw.swapper.cropSize,
                             targetToCrop = raw.targetToSwapperCrop,
                             blendConstraintMask = parserMask,
+                            protectedBaseRois = request.protectedBaseRois,
+                            protectedFaceRegions = request.protectedFaceRegions,
                         )
                     } finally {
                         parserMask?.fill(0f)
