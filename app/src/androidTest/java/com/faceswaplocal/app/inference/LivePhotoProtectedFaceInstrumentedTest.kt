@@ -136,6 +136,11 @@ class LivePhotoProtectedFaceInstrumentedTest {
                 assertTrue("assigned face $index must actually change", changed > 100)
             }
             android.util.Log.i(TAG, "changed pixels per face box: $report")
+            // Kept so colour work can be measured on the same frame without driving the
+            // UI: pull with `run-as ... cat files/live_result.png`.
+            java.io.FileOutputStream(File(context.filesDir, "live_result.png")).use { out ->
+                swap.finalBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
 
             // Bit-identity is what §2.2 asks for and what the synthetic dense fixture
             // delivers. This photograph does not quite reach it, and the reason is
