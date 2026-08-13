@@ -507,6 +507,74 @@ class FaceCompositorTest {
         }
     }
 
+    /**
+     * A parser mask on a real photograph reaches 0.999... rather than a clean 1.0, so a
+     * fully protected face still received a residual alpha. The blend then truncated the
+     * base value itself - `200 * (1 - 0.0002)` floors to 199 - and shifted the pixel by
+     * one level. On the live 4 MP acceptance run this altered 1054 pixels of a face the
+     * user had marked "do not change". Sub-threshold alphas must skip the write entirely.
+     */
+    @Test
+    fun `residual protection alpha leaves a protected face bit-identical`() {
+        val width = 4
+        val height = 4
+        val base = IntArray(width * height) { argb(255, 200, 150, 100) }
+        val crop = IntArray(width * height) { argb(255, 10, 20, 30) }
+        val baseBefore = base.copyOf()
+        // 0.9998 protection against a full paste leaves alpha = 2e-4, far below 1/512.
+        val protection = ProtectedFaceRegion(
+            bounds = CompositeRoi(0, 0, width, height),
+            mask = FloatArray(width * height) { 0.9998f },
+            cropWidth = width,
+            cropHeight = height,
+            baseToCrop = IDENTITY,
+        )
+
+        val result = FaceCompositor.pasteBack(
+            basePixels = base,
+            baseWidth = width,
+            baseHeight = height,
+            cropPixels = crop,
+            cropMask = FloatArray(width * height) { 1f },
+            cropWidth = width,
+            cropHeight = height,
+            baseToCrop = IDENTITY,
+            protectedFaceRegions = listOf(protection),
+        )
+
+        assertArrayEquals("input must not be mutated", baseBefore, base)
+        assertArrayEquals(
+            "a residual alpha below the write threshold must not shift any channel",
+            baseBefore,
+            result.pixels,
+        )
+    }
+
+    /** The threshold must not silently swallow a blend that is genuinely visible. */
+    @Test
+    fun `an alpha just above the threshold still blends`() {
+        val width = 2
+        val height = 1
+        val base = IntArray(width * height) { argb(255, 200, 200, 200) }
+        val crop = IntArray(width * height) { argb(255, 0, 0, 0) }
+        val justBelow = (FaceCompositor.MINIMUM_BLEND_ALPHA / 2).toFloat()
+        val justAbove = (FaceCompositor.MINIMUM_BLEND_ALPHA * 4).toFloat()
+
+        val result = FaceCompositor.pasteBack(
+            basePixels = base,
+            baseWidth = width,
+            baseHeight = height,
+            cropPixels = crop,
+            cropMask = floatArrayOf(justBelow, justAbove),
+            cropWidth = width,
+            cropHeight = height,
+            baseToCrop = IDENTITY,
+        )
+
+        assertEquals("below the threshold stays untouched", base[0], result.pixels[0])
+        assertTrue("above the threshold must still change", result.pixels[1] != base[1])
+    }
+
     private fun index(x: Int, y: Int, width: Int): Int = y * width + x
 
     private fun argb(alpha: Int, red: Int, green: Int, blue: Int): Int =

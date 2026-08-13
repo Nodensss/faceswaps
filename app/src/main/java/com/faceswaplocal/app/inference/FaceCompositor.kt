@@ -240,10 +240,29 @@ object FaceCompositor {
                 // A protected face wins over the paste: full protection forces alpha to
                 // zero, and its soft edge fades the paste out instead of clipping it.
                 val protection = protectionAt(protectedFaceRegions, baseX, baseY)
-                val alpha = (pasteAlpha * (1.0 - protection)).coerceIn(0.0, 1.0)
+                // A parser mask is soft everywhere, so a face the user marked "do not
+                // change" was still claiming only ~0.97 over features like an eyebrow and
+                // letting ~3% of a neighbour's paste through. Treat solid coverage as
+                // absolute: inside the protected face nothing is written, and the fade is
+                // spent on the way out instead. The step this introduces is at most
+                // `1 - FULL_PROTECTION_THRESHOLD` of the paste, an order below the hard
+                // rectangle that `StageEDenseUnassignedFaceInstrumentedTest` measures for
+                // seams.
+                val alpha = if (protection >= FULL_PROTECTION_THRESHOLD) {
+                    0.0
+                } else {
+                    (pasteAlpha * (1.0 - protection)).coerceIn(0.0, 1.0)
+                }
                 val baseIndex = baseY * baseWidth + baseX
                 warpedMask[baseIndex] = alpha.toFloat()
-                if (alpha <= 0.0) continue
+                // The mask above records the geometric blend field; this threshold governs
+                // only whether a pixel is actually written. Below it the paste cannot move
+                // an 8-bit channel by half a level, so the sole remaining effect of writing
+                // would be the truncation bias of `toInt()` applied to the base itself:
+                // 200 * (1 - 1e-6) floors to 199. Together with the protection cut-off
+                // above, this took the live acceptance run's protected-face drift from
+                // 1054 pixels to 58; see docs/reports/STAGE_E2_CHECKPOINT_3_REPORT.md.
+                if (alpha < MINIMUM_BLEND_ALPHA) continue
 
                 val cropColor = sampleArgbEdgeReplicate(
                     pixels = cropPixels,
@@ -656,6 +675,22 @@ object FaceCompositor {
     private const val MIN_OFFSET = -24.0
     private const val MAX_OFFSET = 24.0
     private const val MIN_STANDARD_DEVIATION = 1e-8
+
+    /**
+     * Smallest paste alpha still worth writing. A blend moves a channel by at most
+     * `|crop - base| * alpha <= 255 * alpha`, so below `1/510` the correctly rounded
+     * result is always the base value; `1/512` is that bound rounded to a binary
+     * fraction, which keeps the comparison exact in binary floating point.
+     */
+    internal const val MINIMUM_BLEND_ALPHA = 1.0 / 512.0
+
+    /**
+     * Protection at or above this counts as solid coverage of the protected face, and the
+     * paste is refused outright rather than scaled down. BiSeNet never returns a clean
+     * `1.0`, so without this a face marked "do not change" keeps absorbing a few percent
+     * of a neighbouring blend across its own features.
+     */
+    internal const val FULL_PROTECTION_THRESHOLD = 0.5
     private const val RED_SHIFT = 16
     private const val GREEN_SHIFT = 8
     private const val BLUE_SHIFT = 0

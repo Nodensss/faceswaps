@@ -23,6 +23,7 @@ class ImageMemoryBudgetTest {
 
     @Test
     fun `the smaller of heap and system headroom wins`() {
+        val reserve = PipelinePass.peak().sessionReserveBytes
         val heapBound = ImageMemoryBudget.maxTargetPixels(
             freeHeapBytes = 64 * megabyte,
             availableSystemBytes = 4_000 * megabyte,
@@ -30,7 +31,7 @@ class ImageMemoryBudgetTest {
         )
         val systemBound = ImageMemoryBudget.maxTargetPixels(
             freeHeapBytes = 4_000 * megabyte,
-            availableSystemBytes = 256 * megabyte,
+            availableSystemBytes = 256 * megabyte + reserve,
             lowMemory = false,
         )
 
@@ -50,19 +51,82 @@ class ImageMemoryBudgetTest {
 
     @Test
     fun `budget scales with available memory instead of being a constant`() {
+        val reserve = PipelinePass.peak().sessionReserveBytes
         val small = ImageMemoryBudget.maxTargetPixels(
             freeHeapBytes = 96 * megabyte,
-            availableSystemBytes = 400 * megabyte,
+            availableSystemBytes = 400 * megabyte + reserve,
             lowMemory = false,
         )
         val large = ImageMemoryBudget.maxTargetPixels(
             freeHeapBytes = 384 * megabyte,
-            availableSystemBytes = 1_600 * megabyte,
+            availableSystemBytes = 1_600 * megabyte + reserve,
             lowMemory = false,
         )
 
         assertTrue("a larger device must get a larger budget", large > small)
-        assertEquals("the budget must be linear in the headroom", 4.0, large.toDouble() / small, 0.01)
+        assertEquals(
+            "above the reserve the budget must stay linear in the headroom",
+            4.0,
+            large.toDouble() / small,
+            0.01,
+        )
+    }
+
+    @Test
+    fun `the session reserve comes off the top before the safety fraction`() {
+        val reserve = PipelinePass.SWAP.sessionReserveBytes
+        val pixels = ImageMemoryBudget.maxTargetPixels(
+            freeHeapBytes = 64L * 1024L * megabyte,
+            availableSystemBytes = 1_000 * megabyte + reserve,
+            lowMemory = false,
+            sessionReserveBytes = reserve,
+        )
+
+        assertEquals(
+            (
+                1_000 * megabyte * ImageMemoryBudget.SYSTEM_SAFETY_FRACTION /
+                    (ImageMemoryBudget.JAVA_BYTES_PER_PIXEL + ImageMemoryBudget.NATIVE_BYTES_PER_PIXEL)
+                ).toInt(),
+            pixels,
+        )
+    }
+
+    @Test
+    fun `a device that cannot even hold the sessions falls back to the minimum`() {
+        val pixels = ImageMemoryBudget.maxTargetPixels(
+            freeHeapBytes = 64L * 1024L * megabyte,
+            availableSystemBytes = PipelinePass.SWAP.sessionReserveBytes / 2,
+            lowMemory = false,
+        )
+
+        assertEquals(ImageMemoryBudget.MIN_TARGET_PIXELS, pixels)
+    }
+
+    @Test
+    fun `the swap pass is the more expensive one and sets the decode budget`() {
+        assertTrue(
+            "InSwapper outweighs GFPGAN once resident, so SWAP must be the peak",
+            PipelinePass.SWAP.sessionReserveBytes > PipelinePass.RESTORE.sessionReserveBytes,
+        )
+        assertEquals(PipelinePass.SWAP, PipelinePass.peak())
+
+        val swapBudget = ImageMemoryBudget.maxTargetPixels(
+            freeHeapBytes = 64L * 1024L * megabyte,
+            availableSystemBytes = 3_000 * megabyte,
+            lowMemory = false,
+            sessionReserveBytes = PipelinePass.SWAP.sessionReserveBytes,
+        )
+        val restoreBudget = ImageMemoryBudget.maxTargetPixels(
+            freeHeapBytes = 64L * 1024L * megabyte,
+            availableSystemBytes = 3_000 * megabyte,
+            lowMemory = false,
+            sessionReserveBytes = PipelinePass.RESTORE.sessionReserveBytes,
+        )
+
+        assertTrue(
+            "restoration frees room, so its budget must be the larger of the two",
+            restoreBudget > swapBudget,
+        )
     }
 
     @Test

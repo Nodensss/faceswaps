@@ -22,6 +22,35 @@ internal object PlatformRuntimeMemory : RuntimeMemory {
 }
 
 /**
+ * The two halves of the photo pipeline, with the resident cost of the sessions each one
+ * holds open. The coordinator's barrier guarantees InSwapper and GFPGAN never coexist,
+ * while the BiSeNet parser session spans both, so each pass is `parser + its own model`.
+ *
+ * Figures are `VmRSS` deltas measured one session at a time by
+ * `SessionFootprintInstrumentedTest` on AVD API 35, not file sizes. The gap matters:
+ * InSwapper ships as 265 MiB of fp16 and occupies 507 MiB once open, because the CPU
+ * execution provider materialises fp32 weights.
+ */
+enum class PipelinePass(val sessionReserveBytes: Long) {
+    SWAP(BISENET_RESIDENT_BYTES + INSWAPPER_RESIDENT_BYTES),
+    RESTORE(BISENET_RESIDENT_BYTES + GFPGAN_RESIDENT_BYTES),
+    ;
+
+    companion object {
+        /**
+         * A photo has to survive every pass it will be put through, so the decode is
+         * sized against the most expensive one rather than the first.
+         */
+        fun peak(): PipelinePass = entries.maxBy(PipelinePass::sessionReserveBytes)
+    }
+}
+
+private const val KIB = 1_024L
+internal const val BISENET_RESIDENT_BYTES = 93_376L * KIB
+internal const val INSWAPPER_RESIDENT_BYTES = 519_408L * KIB
+internal const val GFPGAN_RESIDENT_BYTES = 335_376L * KIB
+
+/**
  * Decides how many pixels of a target photo the device can still carry through the whole
  * photo pipeline, so the limit follows real memory instead of a hardcoded edge length
  * (§5.2, §12).
@@ -44,8 +73,15 @@ internal object PlatformRuntimeMemory : RuntimeMemory {
  *  6. the previous working bitmap, alive until the new one replaces it;
  *  7. the newly created result bitmap.
  *
- * The safety fractions leave room for the ONNX Runtime arenas, the aligned crops and the
- * Compose texture, none of which scale with the target size.
+ * Those per-pixel costs are only half the picture. The inference sessions do not scale
+ * with the target, but they are large and they are resident while the full-frame buffers
+ * above are alive, so they must be reserved rather than absorbed by a safety fraction —
+ * that omission is what let a 16 MP photo pass the budget and then get OOM-killed twice
+ * (see `docs/reports/STAGE_E2_MANUAL_ACCEPTANCE_REPORT.md`). [PipelinePass] carries the
+ * measured resident cost of each pass.
+ *
+ * The safety fractions now cover only what is left unmodelled: the aligned crops, the
+ * Compose texture and allocator slack, none of which scale with the target size.
  */
 class ImageMemoryBudget(
     private val runtime: RuntimeMemory = PlatformRuntimeMemory,
@@ -57,12 +93,19 @@ class ImageMemoryBudget(
     private fun freeHeapBytes(): Long =
         runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
 
-    fun maxTargetPixels(): Int {
+    /**
+     * [pass] defaults to the most expensive pass because a decoded target must survive
+     * all of them. Pass an explicit value to re-evaluate at a pass boundary, where the
+     * resident set differs: the swap pass costs roughly 180 MiB more than restoration.
+     */
+    @JvmOverloads
+    fun maxTargetPixels(pass: PipelinePass = PipelinePass.peak()): Int {
         val memory = systemMemory()
         return maxTargetPixels(
             freeHeapBytes = freeHeapBytes(),
             availableSystemBytes = memory.availableBytes,
             lowMemory = memory.lowMemory,
+            sessionReserveBytes = pass.sessionReserveBytes,
         )
     }
 
@@ -123,11 +166,17 @@ class ImageMemoryBudget(
             freeHeapBytes: Long,
             availableSystemBytes: Long,
             lowMemory: Boolean,
+            sessionReserveBytes: Long = PipelinePass.peak().sessionReserveBytes,
         ): Int {
             val heapPixels =
                 (freeHeapBytes * HEAP_SAFETY_FRACTION / JAVA_BYTES_PER_PIXEL).toLong()
+            // The reserve comes off the top: it is a known, already-quantified allocation,
+            // so it must not be scaled by a fraction meant for unmodelled slack. ONNX
+            // weights are native, so only the system term is charged for them.
+            val systemBytesForPixels =
+                (availableSystemBytes - sessionReserveBytes).coerceAtLeast(0L)
             val systemPixels = (
-                availableSystemBytes * SYSTEM_SAFETY_FRACTION /
+                systemBytesForPixels * SYSTEM_SAFETY_FRACTION /
                     (JAVA_BYTES_PER_PIXEL + NATIVE_BYTES_PER_PIXEL)
                 ).toLong()
             val affordable = minOf(heapPixels, systemPixels)
