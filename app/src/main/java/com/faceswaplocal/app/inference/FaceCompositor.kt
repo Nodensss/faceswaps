@@ -38,10 +38,17 @@ data class ColorMatchedCrop(
     val adjustment: FaceColorAdjustment,
 )
 
-/** Result of [FaceCompositor.pasteBack]: the blended image and the warped alpha mask. */
+/**
+ * Result of [FaceCompositor.pasteBack].
+ *
+ * [warpedMask] is the per-pixel blend alpha over the whole frame. It is `null` unless the
+ * caller asked for it, because nothing in the pipeline ever read it while it cost a
+ * full-frame `FloatArray` — 64 MB on a 16 MP target, a quarter of the per-pixel budget.
+ * Tests opt in to assert on the alpha field directly.
+ */
 data class PasteBackResult(
     val pixels: IntArray,
-    val warpedMask: FloatArray,
+    val warpedMask: FloatArray?,
     val roi: CompositeRoi,
 )
 
@@ -67,16 +74,16 @@ data class ProtectedFaceRegion(
 )
 
 /**
- * Pure-array Stage C output. [warpedMask] has the same dimensions as [pixels], while
- * [cropMask] and [colorMatchedCrop] use the swapper crop dimensions supplied to
- * [FaceCompositor.composite].
+ * Pure-array Stage C output. [cropMask] and [colorMatchedCrop] use the swapper crop
+ * dimensions supplied to [FaceCompositor.composite]; [warpedMask], when requested, has the
+ * same dimensions as [pixels] and is otherwise `null`.
  */
 data class FaceCompositeResult(
     val pixels: IntArray,
     val width: Int,
     val height: Int,
     val cropMask: FloatArray,
-    val warpedMask: FloatArray,
+    val warpedMask: FloatArray?,
     val colorMatchedCrop: IntArray,
     val colorAdjustment: FaceColorAdjustment,
     val roi: CompositeRoi,
@@ -108,6 +115,8 @@ object FaceCompositor {
         protectedBaseRois: List<CompositeRoi> = emptyList(),
         /** Soft, face-shaped no-write regions for unassigned faces. */
         protectedFaceRegions: List<ProtectedFaceRegion> = emptyList(),
+        /** See [pasteBack]; off by default because nothing in production reads it. */
+        collectWarpedMask: Boolean = false,
     ): FaceCompositeResult {
         requireImage(targetPixels, targetWidth, targetHeight, "Target")
         requireImage(targetCropPixels, cropWidth, cropHeight, "Aligned target crop")
@@ -150,6 +159,7 @@ object FaceCompositor {
             baseToCrop = targetToCrop,
             protectedBaseRois = protectedBaseRois,
             protectedFaceRegions = protectedFaceRegions,
+            collectWarpedMask = collectWarpedMask,
         )
 
         return FaceCompositeResult(
@@ -189,6 +199,11 @@ object FaceCompositor {
         protectedBaseRois: List<CompositeRoi> = emptyList(),
         /** Soft, face-shaped no-write regions; they reduce paste alpha per pixel. */
         protectedFaceRegions: List<ProtectedFaceRegion> = emptyList(),
+        /**
+         * Allocates and fills the full-frame [PasteBackResult.warpedMask]. Off by default:
+         * it costs 4 bytes per pixel of the whole target and no production path reads it.
+         */
+        collectWarpedMask: Boolean = false,
     ): PasteBackResult {
         requireImage(basePixels, baseWidth, baseHeight, "Base")
         requireImage(cropPixels, cropWidth, cropHeight, "Paste crop")
@@ -218,7 +233,7 @@ object FaceCompositor {
             targetToCrop = baseToCrop,
         )
         val resultPixels = basePixels.copyOf()
-        val warpedMask = FloatArray(basePixels.size)
+        val warpedMask = if (collectWarpedMask) FloatArray(basePixels.size) else null
 
         for (baseY in roi.top until roi.bottom) {
             for (baseX in roi.left until roi.right) {
@@ -254,7 +269,7 @@ object FaceCompositor {
                     (pasteAlpha * (1.0 - protection)).coerceIn(0.0, 1.0)
                 }
                 val baseIndex = baseY * baseWidth + baseX
-                warpedMask[baseIndex] = alpha.toFloat()
+                warpedMask?.set(baseIndex, alpha.toFloat())
                 // The mask above records the geometric blend field; this threshold governs
                 // only whether a pixel is actually written. Below it the paste cannot move
                 // an 8-bit channel by half a level, so the sole remaining effect of writing

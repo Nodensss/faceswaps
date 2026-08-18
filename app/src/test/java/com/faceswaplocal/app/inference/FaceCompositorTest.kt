@@ -3,6 +3,7 @@ package com.faceswaplocal.app.inference
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -211,12 +212,13 @@ class FaceCompositorTest {
             cropHeight = width,
             targetToCrop = IDENTITY,
             blendConstraintMask = constraint,
+            collectWarpedMask = true,
         )
 
         assertEquals(0f, constrained.cropMask[index(1, 1, width)], 0f)
         assertEquals(0.25f, constrained.cropMask[index(2, 1, width)], 0f)
-        assertEquals(0f, constrained.warpedMask[index(1, 1, width)], 0f)
-        assertEquals(0.25f, constrained.warpedMask[index(2, 1, width)], 0f)
+        assertEquals(0f, requireNotNull(constrained.warpedMask)[index(1, 1, width)], 0f)
+        assertEquals(0.25f, requireNotNull(constrained.warpedMask)[index(2, 1, width)], 0f)
         assertEquals(target[index(1, 1, width)], constrained.pixels[index(1, 1, width)])
         assertNotEquals(target[index(1, 1, width)], unconstrained.pixels[index(1, 1, width)])
         assertNotEquals(
@@ -297,17 +299,18 @@ class FaceCompositorTest {
             cropWidth = cropWidth,
             cropHeight = cropHeight,
             targetToCrop = AffineMatrix(1.0, 0.0, -3.0, 0.0, 1.0, -2.0),
+            collectWarpedMask = true,
         )
 
         assertEquals(CompositeRoi(3, 2, 7, 6), result.roi)
-        assertEquals(1f, result.warpedMask[index(4, 3, targetWidth)], 0f)
-        assertEquals(0f, result.warpedMask[index(3, 3, targetWidth)], 0f)
+        assertEquals(1f, requireNotNull(result.warpedMask)[index(4, 3, targetWidth)], 0f)
+        assertEquals(0f, requireNotNull(result.warpedMask)[index(3, 3, targetWidth)], 0f)
         assertEquals(argb(255, 40, 50, 60), result.pixels[index(4, 3, targetWidth)])
         for (y in 0 until targetHeight) {
             for (x in 0 until targetWidth) {
                 if (x !in 3 until 7 || y !in 2 until 6) {
                     assertEquals(target[index(x, y, targetWidth)], result.pixels[index(x, y, targetWidth)])
-                    assertEquals(0f, result.warpedMask[index(x, y, targetWidth)], 0f)
+                    assertEquals(0f, requireNotNull(result.warpedMask)[index(x, y, targetWidth)], 0f)
                 }
             }
         }
@@ -328,9 +331,10 @@ class FaceCompositorTest {
             cropWidth = width,
             cropHeight = height,
             targetToCrop = AffineMatrix(1.0, 0.0, -0.5, 0.0, 1.0, 0.0),
+            collectWarpedMask = true,
         )
 
-        val alpha = result.warpedMask[index(0, 0, width)]
+        val alpha = requireNotNull(result.warpedMask)[index(0, 0, width)]
         assertEquals(result.cropMask[index(0, 0, width)] * 0.5f, alpha, 1e-7f)
         val expected = (100.0 * alpha).toInt()
         assertEquals(argb(255, expected, expected, expected), result.pixels[index(0, 0, width)])
@@ -351,11 +355,12 @@ class FaceCompositorTest {
             cropWidth = 4,
             cropHeight = 4,
             targetToCrop = AffineMatrix(1.0, 0.0, 100.0, 0.0, 1.0, 100.0),
+            collectWarpedMask = true,
         )
 
         assertEquals(CompositeRoi(0, 0, 0, 0), result.roi)
         assertArrayEquals(target, result.pixels)
-        assertTrue(result.warpedMask.all { it == 0f })
+        assertTrue(requireNotNull(result.warpedMask).all { it == 0f })
     }
 
     @Test
@@ -376,10 +381,11 @@ class FaceCompositorTest {
             cropWidth = 2,
             cropHeight = 2,
             baseToCrop = IDENTITY,
+            collectWarpedMask = true,
         )
 
         assertEquals(CompositeRoi(0, 0, 2, 2), result.roi)
-        assertArrayEquals(mask, result.warpedMask, 0f)
+        assertArrayEquals(mask, requireNotNull(result.warpedMask), 0f)
         assertArrayEquals(
             intArrayOf(
                 argb(77, 10, 20, 30),
@@ -410,13 +416,14 @@ class FaceCompositorTest {
             cropHeight = 4,
             baseToCrop = IDENTITY,
             protectedBaseRois = listOf(protected),
+            collectWarpedMask = true,
         )
 
         for (y in protected.top until protected.bottom) {
             for (x in protected.left until protected.right) {
                 val pixel = index(x, y, 4)
                 assertEquals(base[pixel], result.pixels[pixel])
-                assertEquals(0f, result.warpedMask[pixel])
+                assertEquals(0f, requireNotNull(result.warpedMask)[pixel])
             }
         }
         assertNotEquals(base[0], result.pixels[0])
@@ -573,6 +580,45 @@ class FaceCompositorTest {
 
         assertEquals("below the threshold stays untouched", base[0], result.pixels[0])
         assertTrue("above the threshold must still change", result.pixels[1] != base[1])
+    }
+
+    /**
+     * The full-frame alpha mask is 4 bytes per pixel of the target — 64 MB on a 16 MP
+     * photo, a quarter of the per-pixel budget — and no production path ever read it.
+     * It must stay unallocated unless a caller explicitly asks.
+     */
+    @Test
+    fun `the warped mask is not allocated unless requested`() {
+        val width = 4
+        val target = IntArray(width * width) { argb(255, 5, 10, 15) }
+        val crop = IntArray(width * width) { argb(255, 100, 110, 120) }
+
+        val default = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = crop,
+            swappedCropPixels = crop,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+        )
+        val requested = FaceCompositor.composite(
+            targetPixels = target,
+            targetWidth = width,
+            targetHeight = width,
+            targetCropPixels = crop,
+            swappedCropPixels = crop,
+            cropWidth = width,
+            cropHeight = width,
+            targetToCrop = IDENTITY,
+            collectWarpedMask = true,
+        )
+
+        assertNull("production must not pay for a mask it never reads", default.warpedMask)
+        assertEquals(target.size, requireNotNull(requested.warpedMask).size)
+        // Opting in must not change a single pixel of the composite.
+        assertArrayEquals(default.pixels, requested.pixels)
     }
 
     private fun index(x: Int, y: Int, width: Int): Int = y * width + x

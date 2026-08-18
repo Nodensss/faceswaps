@@ -99,11 +99,13 @@ class RealPhotoOrientationInstrumentedTest {
         },
         systemMemory = {
             ImageMemoryBudget.SystemMemory(
+                // Plus the session reserve, which the budget subtracts before applying the
+                // safety fraction; otherwise this "generous" device cannot afford 16 MP.
                 availableBytes = (
                     BUDGET_PIXELS.toLong() *
                         (ImageMemoryBudget.JAVA_BYTES_PER_PIXEL + ImageMemoryBudget.NATIVE_BYTES_PER_PIXEL) /
                         ImageMemoryBudget.SYSTEM_SAFETY_FRACTION
-                    ).toLong(),
+                    ).toLong() + PipelinePass.peak().sessionReserveBytes,
                 lowMemory = false,
             )
         },

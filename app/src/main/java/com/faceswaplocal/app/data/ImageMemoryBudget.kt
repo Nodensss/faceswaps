@@ -58,20 +58,23 @@ internal const val GFPGAN_RESIDENT_BYTES = 335_376L * KIB
  * The multipliers below are a census of the full-frame buffers that exist at the same
  * time during one assigned face, taken from the current pipeline:
  *
- * Java heap (`IntArray`/`FloatArray`, counted against `Runtime.maxMemory`)
+ * Java heap (`IntArray`, counted against `Runtime.maxMemory`)
  *  1. the accumulated composite the coordinator carries between faces;
  *  2. `FaceCompositor.pasteBack`'s `basePixels.copyOf()` result;
- *  3. its full-frame `warpedMask` (`FloatArray`, same 4 bytes per pixel);
- *  4. the coordinator's `readPixels()` copy of the freshly produced bitmap.
+ *  3. the coordinator's `readPixels()` copy of the freshly produced bitmap.
+ *
+ * A fourth buffer used to sit here: `pasteBack`'s full-frame `warpedMask`. It was
+ * allocated on every paste and never read outside tests, so it is now opt-in and the
+ * Java multiplier dropped from four buffers to three.
  *
  * `BitmapSampling.warpAffine` and the detector input also read the whole frame into an
  * array, but both are released before the compositing buffers above coexist, so they
  * raise the transient floor rather than the peak.
  *
  * Native heap (bitmap pixels, since API 26 outside the Java heap)
- *  5. the decoded target itself, retained by the UI for the before/after view;
- *  6. the previous working bitmap, alive until the new one replaces it;
- *  7. the newly created result bitmap.
+ *  4. the decoded target itself, retained by the UI for the before/after view;
+ *  5. the previous working bitmap, alive until the new one replaces it;
+ *  6. the newly created result bitmap.
  *
  * Those per-pixel costs are only half the picture. The inference sessions do not scale
  * with the target, but they are large and they are resident while the full-frame buffers
@@ -119,7 +122,7 @@ class ImageMemoryBudget(
         const val SOURCE_MAX_DIMENSION = 2_560
 
         @VisibleForTesting
-        internal const val JAVA_BYTES_PER_PIXEL = 4 * 4
+        internal const val JAVA_BYTES_PER_PIXEL = 3 * 4
 
         @VisibleForTesting
         internal const val NATIVE_BYTES_PER_PIXEL = 3 * 4

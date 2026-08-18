@@ -142,7 +142,7 @@ class OnnxFaceEnhancerPipeline(
                     compositingMs = compositingMs,
                 ).also { undeliveredPixels = it.pixels }
             } finally {
-                paste.warpedMask.fill(0f)
+                paste.warpedMask?.fill(0f)
             }
         } finally {
             rawOutput?.fill(0f)

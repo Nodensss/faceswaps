@@ -218,11 +218,11 @@ class StageESwapParserMaskInstrumentedTest {
                     } finally {
                         parsed.mask.fill(0f)
                         boxComposite.cropMask.fill(0f)
-                        boxComposite.warpedMask.fill(0f)
+                        boxComposite.warpedMask?.fill(0f)
                         boxComposite.colorMatchedCrop.fill(0)
                         boxComposite.pixels.fill(0)
                         parserComposite.cropMask.fill(0f)
-                        parserComposite.warpedMask.fill(0f)
+                        parserComposite.warpedMask?.fill(0f)
                         parserComposite.colorMatchedCrop.fill(0)
                         parserComposite.pixels.fill(0)
                         targetPixels.fill(0)

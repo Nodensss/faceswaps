@@ -133,11 +133,14 @@ class StageE2FullResolutionInstrumentedTest {
         },
         systemMemory = {
             ImageMemoryBudget.SystemMemory(
+                // The reserve is subtracted before the safety fraction, so a device that
+                // can truly afford `maxPixels` of frame buffers must also carry the
+                // sessions on top. Without this the helper under-provisions by ~599 MiB.
                 availableBytes = (
                     maxPixels.toLong() *
                         (ImageMemoryBudget.JAVA_BYTES_PER_PIXEL + ImageMemoryBudget.NATIVE_BYTES_PER_PIXEL) /
                         ImageMemoryBudget.SYSTEM_SAFETY_FRACTION
-                    ).toLong(),
+                    ).toLong() + PipelinePass.peak().sessionReserveBytes,
                 lowMemory = false,
             )
         },
