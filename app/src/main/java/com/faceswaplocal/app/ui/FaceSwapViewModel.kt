@@ -22,6 +22,7 @@ import com.faceswaplocal.app.domain.AssignmentStateCodec
 import com.faceswaplocal.app.domain.FaceQualitySettings
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.ProcessingProgress
+import com.faceswaplocal.app.domain.QualityPreset
 import com.faceswaplocal.app.domain.ProcessingStage
 import com.faceswaplocal.app.domain.SwapAssignment
 import com.faceswaplocal.app.inference.ModelCatalog
@@ -193,6 +194,14 @@ data class FaceSwapUiState(
     val canAnalyze: Boolean
         get() = sourceUris.isNotEmpty() && targetUri != null && phase != AnalysisPhase.ANALYZING &&
             !isProcessing
+
+    /**
+     * Derived, never stored: the preset whose settings match exactly, or
+     * [QualityPreset.CUSTOM] once the user has moved a control by hand. Deriving it means
+     * the label cannot drift out of sync with the switches it claims to describe.
+     */
+    val qualityPreset: QualityPreset
+        get() = QualityPreset.of(qualitySettings)
 
     /** A run in progress, including the window between cancel request and safe stop. */
     val isProcessing: Boolean
@@ -572,6 +581,16 @@ class FaceSwapViewModel(application: Application, private val savedStateHandle: 
                 assignments = FaceAssignmentPlanner.clearSource(state.assignments, sourceFaceId),
             )
         }
+    }
+
+    /**
+     * Applies a preset by writing the settings it names. Nothing else is stored: the
+     * selected preset is derived from the settings, so a later manual change reports
+     * [QualityPreset.CUSTOM] on its own rather than leaving a stale label behind.
+     */
+    fun setQualityPreset(preset: QualityPreset) {
+        val settings = preset.settings ?: return
+        updateQualitySettings { settings }
     }
 
     fun setRestorationEnabled(enabled: Boolean) {

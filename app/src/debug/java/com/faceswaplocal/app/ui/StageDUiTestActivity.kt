@@ -73,6 +73,7 @@ class StageDUiTestActivity : ComponentActivity() {
                     onSetUnchanged = faceSwapViewModel::setUnchanged,
                     onApplySourceToAll = faceSwapViewModel::applySourceToAll,
                     onRemoveSource = faceSwapViewModel::removeSource,
+                    onQualityPresetChange = faceSwapViewModel::setQualityPreset,
                     onRestorationEnabledChange = faceSwapViewModel::setRestorationEnabled,
                     onRestorationStrengthChange = faceSwapViewModel::setRestorationStrength,
                     onParserSwapMaskEnabledChange = faceSwapViewModel::setParserSwapMaskEnabled,

@@ -75,6 +75,7 @@ import com.faceswaplocal.app.domain.ExportSettings
 import com.faceswaplocal.app.domain.FaceId
 import com.faceswaplocal.app.domain.ProcessingProgress
 import com.faceswaplocal.app.domain.ProcessingStage
+import com.faceswaplocal.app.domain.QualityPreset
 import com.faceswaplocal.app.domain.SwapAssignment
 import com.faceswaplocal.app.inference.ModelCatalog
 import com.faceswaplocal.app.inference.ModelDescriptor
@@ -136,6 +137,7 @@ fun FaceSwapRoute(viewModel: FaceSwapViewModel = viewModel()) {
         onSetUnchanged = viewModel::setUnchanged,
         onApplySourceToAll = viewModel::applySourceToAll,
         onRemoveSource = viewModel::removeSource,
+        onQualityPresetChange = viewModel::setQualityPreset,
         onRestorationEnabledChange = viewModel::setRestorationEnabled,
         onRestorationStrengthChange = viewModel::setRestorationStrength,
         onParserSwapMaskEnabledChange = viewModel::setParserSwapMaskEnabled,
@@ -163,6 +165,7 @@ internal fun FaceSwapScreen(
     onSetUnchanged: (FaceId) -> Unit,
     onApplySourceToAll: (FaceId) -> Unit,
     onRemoveSource: (FaceId) -> Unit,
+    onQualityPresetChange: (QualityPreset) -> Unit,
     onRestorationEnabledChange: (Boolean) -> Unit,
     onRestorationStrengthChange: (Float) -> Unit,
     onParserSwapMaskEnabledChange: (Boolean) -> Unit,
@@ -265,6 +268,11 @@ internal fun FaceSwapScreen(
                     onSetUnchanged = onSetUnchanged,
                     onApplySourceToAll = onApplySourceToAll,
                     onRemoveSource = onRemoveSource,
+                )
+
+                QualityPresetCard(
+                    state = state,
+                    onSelect = onQualityPresetChange,
                 )
 
                 PhotoSwapCard(
@@ -1168,4 +1176,104 @@ private fun ErrorCard(message: String, onDismiss: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * Three presets over the two switches the pipeline actually has, plus an honest label
+ * when the user has moved a control by hand. The quoted times are per assigned face and
+ * come from `QualityPresetBenchmarkInstrumentedTest`; they are emulator figures and the
+ * caption says so, because a phone will not match them.
+ */
+@Composable
+private fun QualityPresetCard(
+    state: FaceSwapUiState,
+    onSelect: (QualityPreset) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            QualityPresetRow(
+                selected = state.qualityPreset,
+                enabled = !state.isProcessing,
+                assignedFaces = state.assignments.size,
+                onSelect = onSelect,
+            )
+        }
+    }
+}
+
+@Composable
+private fun QualityPresetRow(
+    selected: QualityPreset,
+    enabled: Boolean,
+    assignedFaces: Int,
+    onSelect: (QualityPreset) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("quality-preset-row"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text("Режим качества", fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QualityPreset.selectable.forEach { preset ->
+                FilterChip(
+                    selected = preset == selected,
+                    onClick = { onSelect(preset) },
+                    enabled = enabled,
+                    label = { Text(preset.label()) },
+                    modifier = Modifier.testTag("quality-preset-${preset.name.lowercase()}"),
+                )
+            }
+        }
+        Text(
+            text = selected.timingCaption(assignedFaces),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("quality-preset-timing"),
+        )
+    }
+}
+
+private fun QualityPreset.label(): String = when (this) {
+    QualityPreset.FAST -> "Быстро"
+    QualityPreset.BALANCED -> "Баланс"
+    QualityPreset.MAXIMUM -> "Максимум"
+    QualityPreset.CUSTOM -> "Пользовательский"
+}
+
+/** Never invents a number for [QualityPreset.CUSTOM]: hand-tuned settings were not timed. */
+private fun QualityPreset.timingCaption(assignedFaces: Int): String {
+    val seconds = emulatorSecondsPerFace
+        ?: return "Пользовательский режим: настройки изменены вручную, время не измерялось."
+    val detail = when (this) {
+        QualityPreset.FAST -> "восстановление выключено"
+        QualityPreset.BALANCED -> "GFPGAN на силе 0,8"
+        QualityPreset.MAXIMUM -> "GFPGAN и BiSeNet-маска свапа, примерно как «Баланс»"
+        QualityPreset.CUSTOM -> ""
+    }
+    val total = if (assignedFaces > 0) {
+        val whole = seconds * assignedFaces
+        " · для $assignedFaces " + facesWord(assignedFaces) + " примерно " + formatDuration(whole)
+    } else {
+        ""
+    }
+    return "$detail · около $seconds с на лицо$total. Замер на эмуляторе, на телефоне будет иначе."
+}
+
+private fun facesWord(count: Int): String = when {
+    count % 10 == 1 && count % 100 != 11 -> "лица"
+    else -> "лиц"
+}
+
+private fun formatDuration(seconds: Int): String {
+    if (seconds < 60) return "$seconds с"
+    val minutes = seconds / 60
+    val rest = seconds % 60
+    return if (rest == 0) "$minutes мин" else "$minutes мин $rest с"
 }

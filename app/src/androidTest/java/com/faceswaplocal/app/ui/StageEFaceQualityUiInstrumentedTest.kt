@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.faceswaplocal.app.domain.QualityPreset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -97,6 +98,54 @@ class StageEFaceQualityUiInstrumentedTest {
         scrollTo("parser-swap-mask-enabled")
         compose.onNodeWithTag("parser-swap-mask-enabled").assertIsNotEnabled().assertIsOn()
         assertSettings(restorationEnabled = true, strength = 0.8f, parserEnabled = true)
+    }
+
+    /**
+     * The preset is a view of the switches, not a stored label. Picking one must move the
+     * switches, and moving a switch afterwards must demote the row to "custom" rather than
+     * keep claiming a named mode.
+     */
+    @Test
+    fun presetsDriveTheSwitchesAndDemoteToCustomAfterAManualChange() {
+        scrollTo("quality-preset-row")
+
+        compose.onNodeWithTag("quality-preset-fast").performClick()
+        compose.waitForIdle()
+        assertSettings(restorationEnabled = false, strength = 0.8f, parserEnabled = false)
+        assertPreset(QualityPreset.FAST)
+        compose.onNodeWithTag("quality-preset-timing")
+            .assertTextContains("восстановление выключено", substring = true)
+            .assertTextContains("эмулятор", substring = true)
+
+        scrollTo("quality-preset-row")
+        compose.onNodeWithTag("quality-preset-maximum").performClick()
+        compose.waitForIdle()
+        assertSettings(restorationEnabled = true, strength = 0.8f, parserEnabled = true)
+        assertPreset(QualityPreset.MAXIMUM)
+
+        scrollTo("quality-preset-row")
+        compose.onNodeWithTag("quality-preset-balanced").performClick()
+        compose.waitForIdle()
+        assertSettings(restorationEnabled = true, strength = 0.8f, parserEnabled = false)
+        assertPreset(QualityPreset.BALANCED)
+
+        // A hand-moved slider must not keep being reported as "Баланс".
+        scrollTo("restoration-strength")
+        compose.onNodeWithTag("restoration-strength")
+            .performSemanticsAction(SemanticsActions.SetProgress) { setProgress ->
+                assertTrue(setProgress(0.4f))
+            }
+        compose.waitForIdle()
+        assertPreset(QualityPreset.CUSTOM)
+        scrollTo("quality-preset-timing")
+        compose.onNodeWithTag("quality-preset-timing")
+            .assertTextContains("вручную", substring = true)
+    }
+
+    private fun assertPreset(expected: QualityPreset) {
+        compose.activityRule.scenario.onActivity { activity ->
+            assertEquals(expected, activity.faceSwapViewModel.state.value.qualityPreset)
+        }
     }
 
     private fun assertSettings(
